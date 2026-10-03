@@ -79,17 +79,20 @@ class StockGuard(unittest.TestCase):
             path.write_text(data)
         return path
 
-    def run_check(self, stage2=False):
+    def run_check(self, stage2=False, mutate_factory=False):
         command = ("board_name() { echo tuoshi,lt22m; }\n"
                    ". \"$SCRIPT\"\n"
                    "get_magic_long() { hexdump -v -n 4 -e '4/1 \"%02x\"' \"$1\"; }\n"
-                   "default_do_upgrade() { printf flashed > \"$SENTINEL\"; }\n"
+                   "default_do_upgrade() { printf flashed > \"$SENTINEL\"; "
+                   "if [ \"$MUTATE_FACTORY\" = 1 ]; then printf X > \"$FACTORY\"; fi; }\n"
                    "UPGRADE_BACKUP=${UPGRADE_BACKUP:-}\n"
                    + ('platform_do_upgrade "$IMAGE"\n' if stage2 else
                       'platform_check_image "$IMAGE"\n'))
         return subprocess.run(["sh", "-c", command], env=dict(
             self.env, SCRIPT=str(self.script), IMAGE=str(self.image),
-            SENTINEL=str(self.sentinel)), capture_output=True, text=True)
+            SENTINEL=str(self.sentinel), FACTORY=str(self.root / "dev/mtd2"),
+            MUTATE_FACTORY="1" if mutate_factory else "0"),
+            capture_output=True, text=True)
 
     def assert_rejected(self):
         self.sentinel.unlink(missing_ok=True)
@@ -104,6 +107,11 @@ class StockGuard(unittest.TestCase):
             result = self.run_check(stage2)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.sentinel.read_text(), "flashed")
+
+    def test_protected_factory_mutation_aborts_ramfs_stage(self):
+        result = self.run_check(stage2=True, mutate_factory=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.sentinel.exists())
 
     def test_kernel_and_rootfs_corruption(self):
         for offset in (4, 80, 40):
