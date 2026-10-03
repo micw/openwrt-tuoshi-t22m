@@ -1,0 +1,24 @@
+{
+	"admin/status/ml352": {
+		"title": "ML352 Status",
+		"order": 11,
+		"action": {
+			"type": "view",
+			"path": "ml352/status"
+		},
+		"depends": {
+			"acl": [ "luci-app-ml352" ]
+		}
+	},
+	"admin/network/ml352": {
+		"title": "ML352 Configuration",
+		"order": 25,
+		"action": {
+			"type": "view",
+			"path": "ml352/config"
+		},
+		"depends": {
+			"acl": [ "luci-app-ml352" ]
+		}
+	}
+}

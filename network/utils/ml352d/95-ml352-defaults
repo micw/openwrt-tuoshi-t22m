@@ -1,0 +1,26 @@
+#!/bin/sh
+# One-time board defaults for the Tuoshi LT22M. Do not overwrite existing WANs.
+case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+    tuoshi,lt22m|tuoshi,lt22m-fullflash) ;;
+    *) exit 0;;
+esac
+
+if ! uci -q get network.lte >/dev/null; then
+    uci set network.lte=interface
+    uci set network.lte.proto=dhcp
+    uci set network.lte.device=eth1
+    uci commit network
+fi
+
+# Join an existing WAN firewall zone rather than creating a permissive new zone.
+wan_zone=''
+for section in $(uci show firewall | sed -n 's/^firewall\.\([^=]*\)=zone$/\1/p'); do
+    [ "$(uci -q get "firewall.$section.name")" = wan ] && { wan_zone="$section"; break; }
+done
+if [ -n "$wan_zone" ]; then
+    networks="$(uci -q get "firewall.$wan_zone.network")"
+    case " $networks " in *' lte '*) :;; *) uci add_list "firewall.$wan_zone.network=lte"; uci commit firewall;; esac
+else
+    logger -t ml352d 'No WAN firewall zone found; configure firewall before forwarding LTE traffic'
+fi
+exit 0

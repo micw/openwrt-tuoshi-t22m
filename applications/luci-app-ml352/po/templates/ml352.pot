@@ -1,0 +1,185 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8"
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:24
+msgid "APN"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:37
+msgid "AT serial port"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:32
+msgid "Allow roaming"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:76
+msgid "Band"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:15
+msgid ""
+"Configure the ML352 cellular modem. Save & Apply reloads the modem service."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:78
+msgid "DHCP IP address"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:20
+msgid "Enable modem service"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:26
+msgid "Home network"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:68
+msgid "ICCID"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:79
+msgid "Last error"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:80
+msgid "Last updated"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:25
+msgid ""
+"Leave empty to request the mobile network default APN. The APN is not read "
+"from the SIM."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:14
+#: package/luci-app-ml352/root/usr/share/luci/menu.d/luci-app-ml352.json:14
+msgid "ML352 Configuration"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:94
+#: package/luci-app-ml352/root/usr/share/luci/menu.d/luci-app-ml352.json:3
+msgid "ML352 Status"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:59
+msgid ""
+"ML352 live status is unavailable. Check that the modem service is running."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:65
+msgid "Modem and network"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:42
+msgid "Modem network device"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:18
+msgid "Modem settings"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:38
+msgid "Modem unavailable"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:26
+msgid "Network default"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:70
+msgid "No"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:25
+msgid "Not registered"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:47
+msgid "OpenWrt network interface"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:73
+msgid "Operator"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:77
+msgid "PDP IP address"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:75
+msgid "RSSI (dBm)"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:72
+msgid "Radio access technology"
+msgstr ""
+
+#: package/luci-app-ml352/root/usr/share/rpcd/acl.d/luci-app-ml352.json:3
+msgid "Read ML352 status and configure the cellular modem"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:96
+msgid "Read-only live modem status. Refreshes every five seconds."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:36
+msgid "Ready"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:69
+msgid "Registered"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:71
+msgid "Registration"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:28
+msgid "Registration denied"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:29
+msgid "Roaming"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:37
+msgid "SIM not inserted"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:67
+msgid "SIM state"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:98
+msgid "SIM state and ICCID are checked at most once per minute."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:27
+msgid "Searching"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:74
+msgid "Signal quality (CSQ)"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:86
+msgid "The modem status has not been updated recently."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:39
+msgid "Unknown"
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:29
+msgid "Use only letters, digits, dots, underscores and hyphens."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:7
+msgid ""
+"Use only letters, digits, underscores, dots, slashes, colons and hyphens."
+msgstr ""
+
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:70
+msgid "Yes"
+msgstr ""

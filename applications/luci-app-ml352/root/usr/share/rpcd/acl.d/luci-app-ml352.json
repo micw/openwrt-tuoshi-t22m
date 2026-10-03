@@ -1,0 +1,14 @@
+{
+  "luci-app-ml352": {
+    "description": "Read ML352 status and configure the cellular modem",
+    "read": {
+      "ubus": {
+        "luci.ml352": [ "status" ]
+      },
+      "uci": [ "ml352" ]
+    },
+    "write": {
+      "uci": [ "ml352" ]
+    }
+  }
+}

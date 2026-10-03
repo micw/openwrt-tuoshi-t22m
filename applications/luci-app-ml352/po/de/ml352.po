@@ -1,0 +1,143 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: luci-app-ml352\n"
+"PO-Revision-Date: 2026-10-01 00:00+0000\n"
+"Last-Translator: ML352 maintainers\n"
+"Language-Team: German\n"
+"MIME-Version: 1.0\n"
+"Language: de\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "APN"
+msgstr "APN"
+
+msgid "AT serial port"
+msgstr "AT-Seriellport"
+
+msgid "Allow roaming"
+msgstr "Roaming erlauben"
+
+msgid "Band"
+msgstr "Frequenzband"
+
+msgid "Configure the ML352 cellular modem. Save & Apply reloads the modem service."
+msgstr "ML352-Mobilfunkmodem konfigurieren. Speichern & Anwenden startet den Modemdienst neu."
+
+msgid "DHCP IP address"
+msgstr "DHCP-IP-Adresse"
+
+msgid "Enable modem service"
+msgstr "Modemdienst aktivieren"
+
+msgid "Home network"
+msgstr "Heimnetz"
+
+msgid "ICCID"
+msgstr "ICCID"
+
+msgid "Last error"
+msgstr "Letzter Fehler"
+
+msgid "Last updated"
+msgstr "Zuletzt aktualisiert"
+
+msgid "Leave empty to request the mobile network default APN. The APN is not read from the SIM."
+msgstr "Leer lassen, um den Standard-APN des Mobilfunknetzes anzufragen. Der APN wird nicht von der SIM gelesen."
+
+msgid "ML352 Configuration"
+msgstr "ML352-Konfiguration"
+
+msgid "ML352 Status"
+msgstr "ML352-Status"
+
+msgid "ML352 live status is unavailable. Check that the modem service is running."
+msgstr "Der aktuelle ML352-Status ist nicht verfügbar. Prüfen Sie, ob der Modemdienst läuft."
+
+msgid "Modem and network"
+msgstr "Modem und Netzwerk"
+
+msgid "Modem unavailable"
+msgstr "Modem nicht verfügbar"
+
+msgid "Modem network device"
+msgstr "Modem-Netzwerkgerät"
+
+msgid "Modem settings"
+msgstr "Modemeinstellungen"
+
+msgid "Network default"
+msgstr "Netzwerkstandard"
+
+msgid "No"
+msgstr "Nein"
+
+msgid "Not registered"
+msgstr "Nicht eingebucht"
+
+msgid "OpenWrt network interface"
+msgstr "OpenWrt-Netzwerkschnittstelle"
+
+msgid "Operator"
+msgstr "Netzbetreiber"
+
+msgid "PDP IP address"
+msgstr "PDP-IP-Adresse"
+
+msgid "RSSI (dBm)"
+msgstr "RSSI (dBm)"
+
+msgid "Radio access technology"
+msgstr "Funktechnologie"
+
+msgid "Read ML352 status and configure the cellular modem"
+msgstr "ML352-Status lesen und Mobilfunkmodem konfigurieren"
+
+msgid "Read-only live modem status. Refreshes every five seconds."
+msgstr "Aktueller Modemstatus (nur lesbar). Aktualisierung alle fünf Sekunden."
+
+msgid "SIM state and ICCID are checked at most once per minute."
+msgstr "SIM-Status und ICCID werden höchstens einmal pro Minute geprüft."
+
+msgid "Ready"
+msgstr "Bereit"
+
+msgid "Registered"
+msgstr "Eingebucht"
+
+msgid "Registration"
+msgstr "Netzregistrierung"
+
+msgid "Registration denied"
+msgstr "Registrierung abgelehnt"
+
+msgid "Roaming"
+msgstr "Roaming"
+
+msgid "SIM state"
+msgstr "SIM-Status"
+
+msgid "SIM not inserted"
+msgstr "SIM nicht eingesetzt"
+
+msgid "Searching"
+msgstr "Netzsuche"
+
+msgid "Signal quality (CSQ)"
+msgstr "Signalqualität (CSQ)"
+
+msgid "The modem status has not been updated recently."
+msgstr "Der Modemstatus wurde seit einiger Zeit nicht aktualisiert."
+
+msgid "Unknown"
+msgstr "Unbekannt"
+
+msgid "Use only letters, digits, dots, underscores and hyphens."
+msgstr "Nur Buchstaben, Ziffern, Punkte, Unterstriche und Bindestriche verwenden."
+
+msgid "Use only letters, digits, underscores, dots, slashes, colons and hyphens."
+msgstr "Nur Buchstaben, Ziffern, Unterstriche, Punkte, Schrägstriche, Doppelpunkte und Bindestriche verwenden."
+
+msgid "Yes"
+msgstr "Ja"
