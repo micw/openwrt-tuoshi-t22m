@@ -23,6 +23,10 @@ config_get_bool roaming modem roaming 1
 # These board-specific policies are fixed, not user-facing UCI options.
 poll_interval=15
 retry_interval=45
+recovery_delay=600
+recovery_cooldown=1800
+recovery_window=86400
+recovery_max_attempts=3
 case "$apn" in *[!a-zA-Z0-9._-]*) logger -t "$NAME" 'Invalid APN characters'; exit 1;; esac
 case "$interface:$netdev:$at_port" in *[!a-zA-Z0-9_./:-]*) logger -t "$NAME" 'Invalid interface/device characters'; exit 1;; esac
 [ "$enabled" -eq 1 ] || exit 0
@@ -250,6 +254,83 @@ init_modem() {
     return 0
 }
 
+# Only a sustained failure to register warrants a modem reset. Keep the attempt
+# budget in tmpfs so procd reload/respawn cannot bypass it; a router reboot clears
+# it. Uptime is monotonic across wall-clock/NTP changes.
+offline_since=''
+last_sim_ok=''
+recovery_state="$RUN_DIR/recovery.state"
+recover_registration() {
+    local uptime unused now state autostart available reg answer
+    local window_start=0 attempts=0 last_attempt=0 tmp
+    read -r uptime unused < /proc/uptime || return 0
+    now="${uptime%%.*}"
+    case "$now" in ''|*[!0-9]*) return 0;; esac
+
+    # Do not reboot for a missing SIM, a serial failure, a disabled interface,
+    # or a valid registration with only PDP/DHCP trouble.
+    if [ "$registered" -ne 0 ] || [ "$sim_state" != ready ] ||
+       [ -z "$last_sim_ok" ] || [ $((now - last_sim_ok)) -lt 0 ] ||
+       [ $((now - last_sim_ok)) -gt 90 ] ||
+       [ "$(uci -q get network.$interface.disabled)" = 1 ] ||
+       [ "$(uci -q get network.$interface.proto)" != dhcp ] ||
+       [ "$(uci -q get network.$interface.device)" != "$netdev" ]; then
+        offline_since=''
+        return 0
+    fi
+    state="$(ubus call "network.interface.$interface" status 2>/dev/null)" || { offline_since=''; return 0; }
+    autostart="$(printf '%s\n' "$state" | jsonfilter -e '@.autostart' 2>/dev/null)"
+    available="$(printf '%s\n' "$state" | jsonfilter -e '@.available' 2>/dev/null)"
+    if [ "$autostart" != true ] || [ "$available" != true ]; then
+        offline_since=''
+        return 0
+    fi
+    if [ -z "$offline_since" ] || [ "$now" -lt "$offline_since" ]; then
+        offline_since="$now"
+        return 0
+    fi
+    [ $((now - offline_since)) -ge "$recovery_delay" ] || return 0
+
+    if [ -f "$recovery_state" ]; then
+        read -r window_start attempts last_attempt < "$recovery_state" || return 0
+        case "$window_start:$attempts:$last_attempt" in *[!0-9:]*|::*|:*:|:*) return 0;; esac
+        [ -n "$window_start" ] && [ -n "$attempts" ] && [ -n "$last_attempt" ] || return 0
+    fi
+    if [ "$now" -lt "$window_start" ] || [ $((now - window_start)) -ge "$recovery_window" ]; then
+        window_start="$now" attempts=0 last_attempt=0
+    fi
+    [ "$attempts" -lt "$recovery_max_attempts" ] || return 0
+    [ "$last_attempt" -eq 0 ] || [ $((now - last_attempt)) -ge "$recovery_cooldown" ] || return 0
+
+    # Recheck under the existing serial lock before a disruptive command.
+    answer="$(at 'AT' 2>/dev/null)" || { offline_since=''; return 0; }
+    printf '%s\n' "$answer" | grep -qx OK || { offline_since=''; return 0; }
+    answer="$(at 'AT+CEREG?' 2>/dev/null)" || { offline_since=''; return 0; }
+    reg="$(value '+CEREG' "$answer" | awk -F, 'NF>=2 {gsub(/ /,"",$2);print $2}')"
+    case "$reg" in
+        0|2|3|4) :;;
+        *) offline_since=''; return 0;;
+    esac
+    # This is an attempt, even if USB disappears before CFUN can reply.
+    attempts=$((attempts + 1))
+    [ "$window_start" -ne 0 ] || window_start="$now"
+    tmp="$recovery_state.$$"
+    printf '%s %s %s\n' "$window_start" "$attempts" "$now" > "$tmp" &&
+        chmod 600 "$tmp" && mv -f "$tmp" "$recovery_state" || {
+        rm -f "$tmp"; offline_since=''; return 0;
+    }
+    offline_since="$now"
+    log "No network registration for 10 minutes; restarting modem (attempt $attempts/$recovery_max_attempts)"
+    network_down
+    if at 'AT+CFUN=1,1' >/dev/null 2>&1; then
+        last_error='modem_recovery_restart'
+    else
+        last_error='modem_recovery_command_failed'
+        log 'Modem restart command failed; cooldown still applies'
+    fi
+    write_status
+}
+
 sim_state=unknown registered=0 registration=unknown rat=unknown operator='' csq='' rssi='' band='' pdp_ip='' dhcp_ip=''
 chase_pid=''
 trap 'stop_chase; led_all_off; exit 0' TERM INT
@@ -260,6 +341,7 @@ while :; do
     if [ ! -c "$at_port" ]; then
         sim_state=unavailable registered=0 registration=offline rat=unknown csq='' rssi='' band='' pdp_ip='' dhcp_ip=''
         iccid=''
+        offline_since=''; last_sim_ok=''
         last_error='at_port_missing'; network_down; led_update; write_status; sleep "$poll_interval"; continue
     fi
 
@@ -270,8 +352,8 @@ while :; do
         last_sim_poll="$now"
         read_iccid
         case "$?" in
-            0) sim_state=ready;;
-            2) sim_state=absent; iccid='';;
+            0) sim_state=ready; read -r sim_uptime _ < /proc/uptime; last_sim_ok="${sim_uptime%%.*}";;
+            2) sim_state=absent; iccid=''; last_sim_ok=''; offline_since='';;
             *) :;;  # Keep cache on a transient AT/serial failure.
         esac
     fi
@@ -281,6 +363,7 @@ while :; do
     if [ "$?" -ne 0 ] || [ -z "$response" ]; then
         # SIM status may already have changed in this cycle. Never leave the
         # previous animation or steady LED active just because AT failed.
+        offline_since=''
         last_error='at_port_busy_or_no_response'
         led_update; write_status; sleep "$poll_interval"; continue
     fi
@@ -301,6 +384,7 @@ while :; do
             ;;
     esac
     if [ "$invalid_status" -eq 1 ]; then
+        offline_since=''
         status_failures=$((status_failures + 1))
         if [ "$status_failures" -ge 3 ]; then
             registered=0 registration=unknown rat=unknown pdp_ip='' dhcp_ip=''
@@ -340,7 +424,7 @@ while :; do
         last_config_check="$now"
         configure_roaming
         case "$?" in
-            2) network_down; last_pdp=''; sleep 8;;
+            2) offline_since=''; network_down; last_pdp=''; sleep 8;;
             0) :;;
             *) last_error='roaming_check_failed';;
         esac
@@ -370,5 +454,6 @@ while :; do
     led_update
     write_status
     [ "$1" = --once ] && exit 0
+    recover_registration
     sleep "$poll_interval"
 done
