@@ -86,7 +86,24 @@ jobs:
         run: |
           set -eu
           cp "../lt22m-local-feed/profiles/$PROFILE" .config
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            firmware_version="$GITHUB_REF_NAME"
+          else
+            firmware_version="dev-${GITHUB_SHA:0:7}"
+          fi
+          printf 'CONFIG_IMAGEOPT=y\nCONFIG_VERSIONOPT=y\nCONFIG_VERSION_NUMBER="%s"\n' \
+            "$firmware_version" >> .config
+          printf '# CONFIG_VERSION_FILENAMES is not set\n# CONFIG_VERSION_CODE_FILENAMES is not set\n' >> .config
           make defconfig
+          awk '$0 == "CONFIG_VERSIONOPT=y" { found=1 } END { exit !found }' .config
+          for symbol in CONFIG_VERSION_FILENAMES=y CONFIG_VERSION_CODE_FILENAMES=y; do
+            if awk -v name="$symbol" '$0 == name { found=1 } END { exit !found }' .config; then
+              echo "Unexpected versioned image filenames: $symbol" >&2
+              exit 1
+            fi
+          done
+          awk -v name="CONFIG_VERSION_NUMBER=\"$firmware_version\"" \
+            '$0 == name { found=1 } END { exit !found }' .config
           case "$FLAVOR" in
             stock) device=tuoshi_lt22m; other=tuoshi_lt22m_fullflash ;;
             fullflash) device=tuoshi_lt22m_fullflash; other=tuoshi_lt22m ;;
@@ -102,17 +119,33 @@ jobs:
             exit 1
           fi
           df -h /
-      - name: Build firmware from clean pinned source
+      - name: Build firmware with explicit RC and source revision
         working-directory: ${{ matrix.source_dir }}
+        env:
+          SOURCE_SHA: ${{ matrix.source }}
         run: |
           set -eu
-          make -j2 V=sc || { make -j1 V=s; exit 1; }
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            firmware_version="$GITHUB_REF_NAME"
+          else
+            firmware_version="dev-${GITHUB_SHA:0:7}"
+          fi
+          revision="${firmware_version}-${SOURCE_SHA:0:7}"
+          echo "Building OpenWrt release $firmware_version, revision $revision"
+          make -j2 V=sc REVISION="$revision" || { make -j1 V=s REVISION="$revision"; exit 1; }
       - name: Validate images and offline upgrade tests
         env:
           FLAVOR: ${{ matrix.flavor }}
           SOURCE_DIR: ${{ matrix.source_dir }}
+          SOURCE_SHA: ${{ matrix.source }}
         run: |
           set -eu
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            export LT22M_RELEASE_VERSION="$GITHUB_REF_NAME"
+          else
+            export LT22M_RELEASE_VERSION="dev-${GITHUB_SHA:0:7}"
+          fi
+          export LT22M_REVISION="${LT22M_RELEASE_VERSION}-${SOURCE_SHA:0:7}"
           python3 lt22m-local-feed/scripts/verify_images.py "$FLAVOR" "$SOURCE_DIR"
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s lt22m-local-feed/tests -p test_modem_recovery.py -v
@@ -191,3 +224,6 @@ jobs:
               --title "LT22M ${GITHUB_REF_NAME}" \
               --notes-file dist/RELEASE_NOTES.md
           fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease \
+            --title "LT22M ${GITHUB_REF_NAME}" \
+            --notes-file dist/RELEASE_NOTES.md

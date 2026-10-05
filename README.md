@@ -40,8 +40,13 @@ one device using [`profiles/stock-v1.config`](profiles/stock-v1.config) or
 [`profiles/fullflash-v1.config`](profiles/fullflash-v1.config). The workflow
 checks image magic, CRC, metadata, size, required packages, offline guards,
 and publishes only the three named binaries plus SHA-256 sums and source pins.
-Manual `workflow_dispatch` runs build artifacts without creating a release;
-a `v*` tag publishes a prerelease once both builds pass.
+The visible OpenWrt release is the Git tag; its revision is the tag followed by
+the short, pinned OpenWrt source commit (for example
+`v0.1.0-rc1-81cc3e5`). This is set explicitly instead of relying on
+OpenWrt's Git-history counter in a shallow checkout. Manual
+`workflow_dispatch` runs build artifacts without creating a release; a `v*`
+tag publishes a prerelease once both builds pass. RC1 test builds may replace
+the RC1 tag and its assets: always verify the current `SHA256SUMS`.
 
 A release image is not a bootloader installer or a backup of a physical device.
 The source feed does not replace OpenWrt's standard package feeds.

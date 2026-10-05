@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fail closed on unexpected LT22M release images and missing embedded packages."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -50,6 +51,12 @@ def main():
             board = metadata["version"]["board"]
             expected_board = device
             assert board == expected_board, (board, expected_board)
+            release = os.environ.get("LT22M_RELEASE_VERSION")
+            revision = os.environ.get("LT22M_REVISION")
+            if release:
+                assert metadata["version"]["version"] == release, metadata
+            if revision:
+                assert metadata["version"]["revision"] == revision, metadata
             assert devices[0] == "tuoshi,lt22m", devices
             if flavor == "fullflash":
                 assert devices[1] == "tuoshi,lt22m-fullflash", devices
