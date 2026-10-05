@@ -18,10 +18,17 @@ class RecoveryTests(unittest.TestCase):
         self.dir = Path(self.tmp.name)
 
     def run_policy(self, *, registration=0, sim='ready', serial=True, enabled=True,
-                   network=True, delay=0, cooldown=0, repeat=1, recheck='0'):
+                   network=True, delay=0, cooldown=0, repeat=1, recheck='0',
+                   autostart=True, owned=False):
+        marker = self.dir / 'network-down-owned'
+        if owned:
+            marker.touch()
+        else:
+            marker.unlink(missing_ok=True)
         script = '''#!/bin/sh
 RUN_DIR="$TEST_DIR"
 recovery_state="$RUN_DIR/recovery.state"
+network_down_owned="$RUN_DIR/network-down-owned"
 recovery_delay="$TEST_DELAY"
 recovery_cooldown="$TEST_COOLDOWN"
 recovery_window=86400
@@ -38,7 +45,7 @@ last_sim_ok="${now%%.*}"
 [ "$TEST_SERIAL" = 1 ] || last_sim_ok=''
 uci() { case "$*" in *disabled) [ "$TEST_ENABLED" = 1 ] && echo 0 || echo 1;; *proto) echo dhcp;; *device) echo eth1;; esac; }
 ubus() { [ "$TEST_NETWORK" = 1 ] && printf '{"autostart":true,"available":true}'; }
-jsonfilter() { case "$*" in *autostart) echo true;; *available) echo true;; esac; }
+jsonfilter() { case "$*" in *autostart) echo "$TEST_AUTOSTART";; *available) echo true;; esac; }
 at() { printf '%s\\n' "$*" >> "$RUN_DIR/at-calls"; case "$*" in AT) echo OK;; AT+CEREG\\?) printf '+CEREG: 0,%s\\nOK\\n' "$TEST_RECHECK";; esac; }
 value() { printf '%s\\n' "$2" | sed -n "s/^${1}:[[:space:]]*//p" | head -n 1; }
 network_down() { echo down >> "$RUN_DIR/network-calls"; }
@@ -55,7 +62,8 @@ done
                    TEST_COOLDOWN=str(cooldown), TEST_REG=str(registration),
                    TEST_SIM=sim, TEST_SERIAL='1' if serial else '0',
                    TEST_NETWORK='1' if network else '0', TEST_REPEAT=str(repeat),
-                   TEST_ENABLED='1' if enabled else '0', TEST_RECHECK=recheck)
+                   TEST_ENABLED='1' if enabled else '0', TEST_RECHECK=recheck,
+                   TEST_AUTOSTART='true' if autostart else 'false')
         result = subprocess.run(['sh'], input=script, text=True, capture_output=True, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         return (self.dir / 'at-calls').read_text().splitlines() if (self.dir / 'at-calls').exists() else []
@@ -82,6 +90,27 @@ done
         calls = self.run_policy(recheck='5', repeat=2)
         self.assertIn('AT+CEREG?', calls)
         self.assertNotIn('AT+CFUN=1,1', calls)
+
+    def test_interface_ownership_follows_daemon_down_and_up(self):
+        source = SOURCE.read_text()
+        functions = source.split('network_down_owned=', 1)[1].split('network_restart() {', 1)[0]
+        script = '''RUN_DIR="$TEST_DIR"
+interface=lte
+ubus() { :; }
+network_down_owned=''' + functions + '''
+network_down
+[ -f "$network_down_owned" ] || exit 1
+network_up
+[ ! -e "$network_down_owned" ] || exit 2
+'''
+        result = subprocess.run(['sh'], input=script, text=True, capture_output=True,
+                                env=dict(os.environ, TEST_DIR=str(self.dir)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_daemon_down_is_allowed_but_manual_ifdown_is_not(self):
+        self.assertEqual(self.run_policy(autostart=False, repeat=2), [])
+        calls = self.run_policy(autostart=False, owned=True, repeat=2)
+        self.assertIn('AT+CFUN=1,1', calls)
 
     def test_attempt_budget_survives_process_restart(self):
         for _ in range(4):

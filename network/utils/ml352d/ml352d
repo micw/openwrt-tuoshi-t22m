@@ -149,13 +149,20 @@ led_update() {
     fi
 }
 
+# netifd sets autostart=false even when this daemon calls down. Remember the
+# owner in tmpfs so recovery can distinguish that from an operator's ifdown.
+network_down_owned="$RUN_DIR/network-down-owned"
 network_up() {
     [ "${ML352_NO_NETWORK:-0}" = 1 ] && return
-    ubus call "network.interface.$interface" up '{}' >/dev/null 2>&1 || :
+    if ubus call "network.interface.$interface" up '{}' >/dev/null 2>&1; then
+        rm -f "$network_down_owned"
+    fi
 }
 network_down() {
     [ "${ML352_NO_NETWORK:-0}" = 1 ] && return
-    ubus call "network.interface.$interface" down '{}' >/dev/null 2>&1 || :
+    if ubus call "network.interface.$interface" down '{}' >/dev/null 2>&1; then
+        (umask 077; : > "$network_down_owned")
+    fi
 }
 network_restart() {
     [ "${ML352_NO_NETWORK:-0}" = 1 ] && return
@@ -281,7 +288,8 @@ recover_registration() {
     state="$(ubus call "network.interface.$interface" status 2>/dev/null)" || { offline_since=''; return 0; }
     autostart="$(printf '%s\n' "$state" | jsonfilter -e '@.autostart' 2>/dev/null)"
     available="$(printf '%s\n' "$state" | jsonfilter -e '@.available' 2>/dev/null)"
-    if [ "$autostart" != true ] || [ "$available" != true ]; then
+    if { [ "$autostart" != true ] && [ ! -f "$network_down_owned" ]; } ||
+       [ "$available" != true ]; then
         offline_since=''
         return 0
     fi
