@@ -1,0 +1,193 @@
+name: Build LT22M firmware
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: lt22m-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.flavor }} image
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: stock
+            source: e2997ebc89f2ec17bc58d6d6258a0fc03b07e9b9
+            source_dir: openwrt-lt22m-stock
+            config: stock-v1.config
+          - flavor: fullflash
+            source: 81cc3e5e33f122439efa23f9dc9776a18f132993
+            source_dir: openwrt-lt22m-new-layout
+            config: fullflash-v1.config
+    steps:
+      - name: Reclaim ephemeral runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/powershell /opt/hostedtoolcache
+          df -h /
+      - uses: actions/checkout@v4
+        with:
+          path: lt22m-local-feed
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: micw/openwrt
+          ref: ${{ matrix.source }}
+          path: ${{ matrix.source_dir }}
+          persist-credentials: false
+      - name: Verify immutable source pins
+        env:
+          SOURCE_SHA: ${{ matrix.source }}
+          SOURCE_DIR: ${{ matrix.source_dir }}
+          FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -eu
+          . lt22m-local-feed/profiles/sources.env
+          case "$FLAVOR" in
+            stock) test "$SOURCE_SHA" = "$STOCK_SHA" ;;
+            fullflash) test "$SOURCE_SHA" = "$FULLFLASH_SHA" ;;
+            *) exit 1 ;;
+          esac
+          test "$(git -C "$SOURCE_DIR" rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git -C lt22m-local-feed rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Install OpenWrt host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib gettext git libncurses-dev libssl-dev python3 \
+            python3-pyelftools python3-setuptools rsync unzip zlib1g-dev \
+            file wget curl ca-certificates subversion libelf-dev swig \
+            libxml-parser-perl ccache
+      - name: Install pinned package, LuCI and local feeds
+        working-directory: ${{ matrix.source_dir }}
+        run: |
+          set -eu
+          cp ../lt22m-local-feed/profiles/feeds.conf feeds.conf
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          . ../lt22m-local-feed/profiles/sources.env
+          test "$(git -C feeds/packages rev-parse HEAD)" = "$PACKAGES_SHA"
+          test "$(git -C feeds/luci rev-parse HEAD)" = "$LUCI_SHA"
+          test "$(realpath feeds/lt22m)" = "$(realpath ../lt22m-local-feed)"
+      - name: Configure selected device and WireGuard packages
+        working-directory: ${{ matrix.source_dir }}
+        env:
+          PROFILE: ${{ matrix.config }}
+          FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -eu
+          cp "../lt22m-local-feed/profiles/$PROFILE" .config
+          make defconfig
+          case "$FLAVOR" in
+            stock) device=tuoshi_lt22m; other=tuoshi_lt22m_fullflash ;;
+            fullflash) device=tuoshi_lt22m_fullflash; other=tuoshi_lt22m ;;
+          esac
+          for symbol in "TARGET_ramips_mt76x8_DEVICE_$device" \
+            PACKAGE_lt22m-modem-ui PACKAGE_ml352d PACKAGE_luci-app-ml352 \
+            PACKAGE_kmod-wireguard PACKAGE_wireguard-tools PACKAGE_luci-proto-wireguard; do
+            awk -v name="CONFIG_$symbol=y" '$0 == name { found=1 } END { exit !found }' .config
+          done
+          if awk -v name="CONFIG_TARGET_ramips_mt76x8_DEVICE_$other=y" \
+            '$0 == name { found=1 } END { exit !found }' .config; then
+            echo "Unexpected second LT22M image target" >&2
+            exit 1
+          fi
+          df -h /
+      - name: Build firmware from clean pinned source
+        working-directory: ${{ matrix.source_dir }}
+        run: |
+          set -eu
+          make -j2 V=sc || { make -j1 V=s; exit 1; }
+      - name: Validate images and offline upgrade tests
+        env:
+          FLAVOR: ${{ matrix.flavor }}
+          SOURCE_DIR: ${{ matrix.source_dir }}
+        run: |
+          set -eu
+          python3 lt22m-local-feed/scripts/verify_images.py "$FLAVOR" "$SOURCE_DIR"
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s lt22m-local-feed/tests -p test_modem_recovery.py -v
+          if [ "$FLAVOR" = stock ]; then
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+              -s lt22m-local-feed/tests -p test_stock_guard.py -v
+          else
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+              -s "$SOURCE_DIR/tests" -p 'test_lt22m*.py' -v
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+              -s "$SOURCE_DIR/package/utils/lt22m-bootloader/tests" -p 'test_*.py' -v
+          fi
+      - name: Stage only expected images
+        env:
+          FLAVOR: ${{ matrix.flavor }}
+          SOURCE_DIR: ${{ matrix.source_dir }}
+          SOURCE_SHA: ${{ matrix.source }}
+        run: |
+          set -eu
+          mkdir -p dist
+          dir="$SOURCE_DIR/bin/targets/ramips/mt76x8"
+          if [ "$FLAVOR" = stock ]; then
+            cp "$dir/openwrt-ramips-mt76x8-tuoshi_lt22m-squashfs-factory.bin" dist/
+            cp "$dir/openwrt-ramips-mt76x8-tuoshi_lt22m-squashfs-sysupgrade.bin" dist/
+          else
+            cp "$dir/openwrt-ramips-mt76x8-tuoshi_lt22m_fullflash-squashfs-sysupgrade.bin" dist/
+          fi
+          printf 'OpenWrt source: %s\nFeed source: %s\n' \
+            "$SOURCE_SHA" "$GITHUB_SHA" > "dist/source-$FLAVOR.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lt22m-${{ matrix.flavor }}-${{ github.run_id }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish validated tagged release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lt22m-*-${{ github.run_id }}
+          path: dist
+          merge-multiple: true
+      - name: Assert precisely three images and generate checksums
+        run: |
+          set -eu
+          python3 scripts/verify_release.py dist
+          (cd dist && sha256sum -- *.bin > SHA256SUMS)
+          cat > dist/BUILD_INFO.txt <<EOF
+          Tag: ${GITHUB_REF_NAME}
+          Feed commit: ${GITHUB_SHA}
+          $(sed -n '/_SHA=/p' profiles/sources.env)
+          EOF
+          cp RELEASE.md dist/RELEASE_NOTES.md
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.bin \
+              dist/SHA256SUMS dist/BUILD_INFO.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/*.bin \
+              dist/SHA256SUMS dist/BUILD_INFO.txt \
+              --verify-tag --prerelease \
+              --title "LT22M ${GITHUB_REF_NAME}" \
+              --notes-file dist/RELEASE_NOTES.md
+          fi
