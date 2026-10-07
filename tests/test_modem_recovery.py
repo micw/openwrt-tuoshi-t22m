@@ -1,94 +1,143 @@
 #!/usr/bin/env python3
-"""Offline policy tests; serial, netifd, UCI and network writes are mocked."""
+"""Offline reconnect-policy tests; serial, netifd, UCI and time are mocked."""
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
-SOURCE = Path(__file__).resolve().parents[1] / "network/utils/ml352d/ml352d"
+SOURCE = Path(__file__).resolve().parents[1] / 'network/utils/ml352d/ml352d'
 
 
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        text = SOURCE.read_text()
-        self.policy = text.split('recover_registration() {', 1)[1].split('\nsim_state=unknown', 1)[0]
-        self.dir = Path(self.tmp.name)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.dir = Path(temp.name)
+        self.policy = (SOURCE.read_text().split('recover_connection() {', 1)[1]
+                       .split('\nsim_state=unknown', 1)[0]
+                       .replace('/proc/uptime', '"$TEST_UPTIME_FILE"'))
 
-    def run_policy(self, *, registration=0, sim='ready', serial=True, enabled=True,
-                   network=True, delay=0, cooldown=0, repeat=1, recheck='0',
-                   autostart=True, owned=False):
+    def run_policy(self, *, times=(1000, 1599, 1600), registration=0,
+                   sim='ready', serial=True, enabled=True, network=True,
+                   autostart=True, owned=False, pdp='', dhcp='', up=False,
+                   recheck='0', fresh_pdp='', fresh_dhcp='', stale_budget=False,
+                   restored_at=None, lost_at=None):
+        for name in ('at-calls', 'network-calls', 'log'):
+            (self.dir / name).unlink(missing_ok=True)
         marker = self.dir / 'network-down-owned'
         if owned:
             marker.touch()
         else:
             marker.unlink(missing_ok=True)
+        if stale_budget:
+            (self.dir / 'recovery.state').write_text('91915 3 95527\n')
         script = '''#!/bin/sh
 RUN_DIR="$TEST_DIR"
-recovery_state="$RUN_DIR/recovery.state"
 network_down_owned="$RUN_DIR/network-down-owned"
-recovery_delay="$TEST_DELAY"
-recovery_cooldown="$TEST_COOLDOWN"
-recovery_window=86400
-recovery_max_attempts=3
+recovery_delay=600
 registered="$TEST_REG"
 sim_state="$TEST_SIM"
 interface=lte
 netdev=eth1
-last_sim_ok=0
+pdp_ip="$TEST_PDP"
+dhcp_ip="$TEST_DHCP"
 offline_since=''
-[ "$TEST_SERIAL" = 1 ] || last_sim_ok=''
-read -r now rest < /proc/uptime
-last_sim_ok="${now%%.*}"
-[ "$TEST_SERIAL" = 1 ] || last_sim_ok=''
+last_sim_ok=''
 uci() { case "$*" in *disabled) [ "$TEST_ENABLED" = 1 ] && echo 0 || echo 1;; *proto) echo dhcp;; *device) echo eth1;; esac; }
-ubus() { [ "$TEST_NETWORK" = 1 ] && printf '{"autostart":true,"available":true}'; }
-jsonfilter() { case "$*" in *autostart) echo "$TEST_AUTOSTART";; *available) echo true;; esac; }
-at() { printf '%s\\n' "$*" >> "$RUN_DIR/at-calls"; case "$*" in AT) echo OK;; AT+CEREG\\?) printf '+CEREG: 0,%s\\nOK\\n' "$TEST_RECHECK";; esac; }
+ubus() { [ "$TEST_NETWORK" = 1 ] || return 1; printf '{"autostart":%s,"available":true,"up":%s}\\n' "$TEST_AUTOSTART" "$TEST_UP"; }
+jsonfilter() { case "$*" in *autostart) echo "$TEST_AUTOSTART";; *available) echo true;; *up) echo "$TEST_UP";; esac; }
+ip() { [ -z "$TEST_FRESH_DHCP" ] || printf '2: eth1 inet %s/24 scope global eth1\\n' "$TEST_FRESH_DHCP"; }
+valid_ip() { case "$1" in ''|0.0.0.0) return 1;; *.*.*.*) return 0;; *) return 1;; esac; }
+at() { printf '%s\\n' "$*" >> "$RUN_DIR/at-calls"; case "$*" in
+    AT) echo OK;;
+    'AT+CEREG? AT+CGACT? AT+CGPADDR') printf '+CEREG: 3,%s\\n+CGACT: 1,1\\n+CGPADDR: 1,"%s"\\nOK\\n' "$TEST_RECHECK" "$TEST_FRESH_PDP";;
+    'AT+CFUN=1,1') echo OK;; esac; }
 value() { printf '%s\\n' "$2" | sed -n "s/^${1}:[[:space:]]*//p" | head -n 1; }
+value_cid1() { printf '%s\\n' "$2" | sed -n "s/^${1}:[[:space:]]*1,[[:space:]]*//p" | head -n 1; }
 network_down() { echo down >> "$RUN_DIR/network-calls"; }
 write_status() { :; }
-log() { :; }
-recover_registration() {'''+self.policy+'''
-i=0
-while [ "$i" -lt "$TEST_REPEAT" ]; do
-    recover_registration
-    i=$((i + 1))
+log() { printf '%s\\n' "$*" >> "$RUN_DIR/log"; }
+recover_connection() {'''+self.policy+'''
+for now in $TEST_TIMES; do
+    printf '%s 0\\n' "$now" > "$TEST_UPTIME_FILE"
+    [ "$TEST_SERIAL" = 1 ] && last_sim_ok="$now" || last_sim_ok=''
+    if [ "$now" = "$TEST_RESTORED_AT" ]; then
+        registered=1 pdp_ip=10.0.0.2 dhcp_ip=10.0.0.2 TEST_UP=true
+    fi
+    if [ "$now" = "$TEST_LOST_AT" ]; then
+        registered=0 pdp_ip='' dhcp_ip='' TEST_UP=false
+    fi
+    recover_connection
 done
 '''
-        env = dict(os.environ, TEST_DIR=str(self.dir), TEST_DELAY=str(delay),
-                   TEST_COOLDOWN=str(cooldown), TEST_REG=str(registration),
+        env = dict(os.environ, TEST_DIR=str(self.dir),
+                   TEST_UPTIME_FILE=str(self.dir / 'uptime'),
+                   TEST_TIMES=' '.join(map(str, times)), TEST_REG=str(registration),
                    TEST_SIM=sim, TEST_SERIAL='1' if serial else '0',
-                   TEST_NETWORK='1' if network else '0', TEST_REPEAT=str(repeat),
-                   TEST_ENABLED='1' if enabled else '0', TEST_RECHECK=recheck,
-                   TEST_AUTOSTART='true' if autostart else 'false')
-        result = subprocess.run(['sh'], input=script, text=True, capture_output=True, env=env)
+                   TEST_ENABLED='1' if enabled else '0',
+                   TEST_NETWORK='1' if network else '0',
+                   TEST_AUTOSTART='true' if autostart else 'false',
+                   TEST_PDP=pdp, TEST_DHCP=dhcp,
+                   TEST_UP='true' if up else 'false',
+                   TEST_RECHECK=recheck, TEST_FRESH_PDP=fresh_pdp,
+                   TEST_FRESH_DHCP=fresh_dhcp,
+                   TEST_RESTORED_AT='' if restored_at is None else str(restored_at),
+                   TEST_LOST_AT='' if lost_at is None else str(lost_at))
+        result = subprocess.run(['sh'], input=script, text=True,
+                                capture_output=True, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return (self.dir / 'at-calls').read_text().splitlines() if (self.dir / 'at-calls').exists() else []
+        calls = self.dir / 'at-calls'
+        return calls.read_text().splitlines() if calls.exists() else []
 
-    def test_sustained_failure_restarts_once(self):
-        calls = self.run_policy(repeat=3, cooldown=1800)
+    def test_no_budget_or_cooldown_every_ten_minutes(self):
+        calls = self.run_policy(times=(1000, 1599, 1600, 2199, 2200,
+                                       2800, 3400, 4000), stale_budget=True)
+        self.assertEqual(calls.count('AT+CFUN=1,1'), 5, calls)
+        self.assertEqual((self.dir / 'recovery.state').read_text(),
+                         '91915 3 95527\n')  # Stale budget is never consulted.
+
+    def test_sustained_failure_required(self):
+        self.assertNotIn('AT+CFUN=1,1',
+                         self.run_policy(times=(1000, 1300, 1599)))
+        calls = self.run_policy(times=(1000, 1500, 1600, 2199, 2200),
+                                restored_at=1500, lost_at=1600)
         self.assertEqual(calls.count('AT+CFUN=1,1'), 1, calls)
-        self.assertEqual((self.dir / 'recovery.state').stat().st_mode & 0o777, 0o600)
 
-    def test_registered_or_missing_sim_does_not_restart(self):
-        for reg, sim in ((1, 'ready'), (5, 'ready'), (0, 'absent'), (0, 'unavailable')):
-            with self.subTest(reg=reg, sim=sim):
-                self.assertEqual(self.run_policy(registration=reg, sim=sim), [])
+    def test_uptime_rollback_restarts_ten_minute_timer(self):
+        calls = self.run_policy(times=(1000, 1300, 900, 1499, 1500))
+        self.assertEqual(calls.count('AT+CFUN=1,1'), 1, calls)
 
-    def test_missing_serial_or_network_does_not_restart(self):
-        self.assertEqual(self.run_policy(serial=False), [])
-        self.assertEqual(self.run_policy(network=False), [])
+    def test_missing_sim_serial_or_network_does_not_restart(self):
+        for settings in ({'sim': 'absent'}, {'sim': 'unavailable'},
+                         {'serial': False}, {'network': False},
+                         {'enabled': False}, {'autostart': False}):
+            with self.subTest(settings=settings):
+                self.assertEqual(self.run_policy(**settings), [])
 
-    def test_below_threshold_does_not_restart(self):
-        self.assertEqual(self.run_policy(delay=600), [])
+    def test_daemon_owned_down_is_not_manual_ifdown(self):
+        calls = self.run_policy(autostart=False, owned=True)
+        self.assertEqual(calls.count('AT+CFUN=1,1'), 1, calls)
 
-    def test_disabled_interface_and_registration_recheck(self):
-        self.assertEqual(self.run_policy(enabled=False, repeat=2), [])
-        calls = self.run_policy(recheck='5', repeat=2)
-        self.assertIn('AT+CEREG?', calls)
+    def test_connected_interface_is_not_restarted(self):
+        calls = self.run_policy(registration=1, pdp='10.0.0.2',
+                                dhcp='10.0.0.2', up=True)
+        self.assertEqual(calls, [])
+
+    def test_registered_without_pdp_or_dhcp_restarts(self):
+        for pdp, dhcp, up in (('', '', False), ('10.0.0.2', '', False),
+                              ('10.0.0.2', '10.0.0.3', True)):
+            with self.subTest(pdp=pdp, dhcp=dhcp, up=up):
+                calls = self.run_policy(registration=1, pdp=pdp,
+                                        dhcp=dhcp, up=up, recheck='1',
+                                        fresh_pdp=pdp, fresh_dhcp=dhcp)
+                self.assertEqual(calls.count('AT+CFUN=1,1'), 1, calls)
+
+    def test_recheck_prevents_reset_if_link_just_recovered(self):
+        calls = self.run_policy(registration=0, recheck='1',
+                                fresh_pdp='10.0.0.2',
+                                fresh_dhcp='10.0.0.2', up=True)
+        self.assertIn('AT+CEREG? AT+CGACT? AT+CGPADDR', calls)
         self.assertNotIn('AT+CFUN=1,1', calls)
 
     def test_interface_ownership_follows_daemon_down_and_up(self):
@@ -106,17 +155,6 @@ network_up
         result = subprocess.run(['sh'], input=script, text=True, capture_output=True,
                                 env=dict(os.environ, TEST_DIR=str(self.dir)))
         self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_daemon_down_is_allowed_but_manual_ifdown_is_not(self):
-        self.assertEqual(self.run_policy(autostart=False, repeat=2), [])
-        calls = self.run_policy(autostart=False, owned=True, repeat=2)
-        self.assertIn('AT+CFUN=1,1', calls)
-
-    def test_attempt_budget_survives_process_restart(self):
-        for _ in range(4):
-            self.run_policy(repeat=2)
-        self.assertEqual((self.dir / 'recovery.state').read_text().split()[1], '3')
-        self.assertEqual((self.dir / 'at-calls').read_text().count('AT+CFUN=1,1'), 3)
 
 
 if __name__ == '__main__':

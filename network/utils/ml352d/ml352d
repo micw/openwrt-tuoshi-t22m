@@ -24,9 +24,6 @@ config_get_bool roaming modem roaming 1
 poll_interval=15
 retry_interval=45
 recovery_delay=600
-recovery_cooldown=1800
-recovery_window=86400
-recovery_max_attempts=3
 case "$apn" in *[!a-zA-Z0-9._-]*) logger -t "$NAME" 'Invalid APN characters'; exit 1;; esac
 case "$interface:$netdev:$at_port" in *[!a-zA-Z0-9_./:-]*) logger -t "$NAME" 'Invalid interface/device characters'; exit 1;; esac
 [ "$enabled" -eq 1 ] || exit 0
@@ -261,22 +258,21 @@ init_modem() {
     return 0
 }
 
-# Only a sustained failure to register warrants a modem reset. Keep the attempt
-# budget in tmpfs so procd reload/respawn cannot bypass it; a router reboot clears
-# it. Uptime is monotonic across wall-clock/NTP changes.
+# A sustained missing cellular data connection restarts the modem after 10
+# minutes. Uptime is monotonic across wall-clock/NTP changes; each restart
+# attempt starts a new 10-minute interval, without a daily budget or cooldown.
 offline_since=''
 last_sim_ok=''
-recovery_state="$RUN_DIR/recovery.state"
-recover_registration() {
-    local uptime unused now state autostart available reg answer
-    local window_start=0 attempts=0 last_attempt=0 tmp
+recover_connection() {
+    local uptime unused now state autostart available netifd_up reg answer
+    local fresh_pdp fresh_dhcp fresh_cgact
     read -r uptime unused < /proc/uptime || return 0
     now="${uptime%%.*}"
     case "$now" in ''|*[!0-9]*) return 0;; esac
 
-    # Do not reboot for a missing SIM, a serial failure, a disabled interface,
-    # or a valid registration with only PDP/DHCP trouble.
-    if [ "$registered" -ne 0 ] || [ "$sim_state" != ready ] ||
+    # A missing SIM/serial response or an operator-disabled interface must not
+    # trigger radio resets. A down marker from this daemon is not an ifdown.
+    if [ "$sim_state" != ready ] ||
        [ -z "$last_sim_ok" ] || [ $((now - last_sim_ok)) -lt 0 ] ||
        [ $((now - last_sim_ok)) -gt 90 ] ||
        [ "$(uci -q get network.$interface.disabled)" = 1 ] ||
@@ -288,8 +284,14 @@ recover_registration() {
     state="$(ubus call "network.interface.$interface" status 2>/dev/null)" || { offline_since=''; return 0; }
     autostart="$(printf '%s\n' "$state" | jsonfilter -e '@.autostart' 2>/dev/null)"
     available="$(printf '%s\n' "$state" | jsonfilter -e '@.available' 2>/dev/null)"
+    netifd_up="$(printf '%s\n' "$state" | jsonfilter -e '@.up' 2>/dev/null)"
     if { [ "$autostart" != true ] && [ ! -f "$network_down_owned" ]; } ||
        [ "$available" != true ]; then
+        offline_since=''
+        return 0
+    fi
+    if [ "$registered" -eq 1 ] && [ -n "$pdp_ip" ] &&
+       [ "$dhcp_ip" = "$pdp_ip" ] && [ "$netifd_up" = true ]; then
         offline_since=''
         return 0
     fi
@@ -299,42 +301,34 @@ recover_registration() {
     fi
     [ $((now - offline_since)) -ge "$recovery_delay" ] || return 0
 
-    if [ -f "$recovery_state" ]; then
-        read -r window_start attempts last_attempt < "$recovery_state" || return 0
-        case "$window_start:$attempts:$last_attempt" in *[!0-9:]*|::*|:*:|:*) return 0;; esac
-        [ -n "$window_start" ] && [ -n "$attempts" ] && [ -n "$last_attempt" ] || return 0
-    fi
-    if [ "$now" -lt "$window_start" ] || [ $((now - window_start)) -ge "$recovery_window" ]; then
-        window_start="$now" attempts=0 last_attempt=0
-    fi
-    [ "$attempts" -lt "$recovery_max_attempts" ] || return 0
-    [ "$last_attempt" -eq 0 ] || [ $((now - last_attempt)) -ge "$recovery_cooldown" ] || return 0
-
-    # Recheck under the existing serial lock before a disruptive command.
+    # Recheck under the serial lock immediately before a disruptive command.
     answer="$(at 'AT' 2>/dev/null)" || { offline_since=''; return 0; }
     printf '%s\n' "$answer" | grep -qx OK || { offline_since=''; return 0; }
-    answer="$(at 'AT+CEREG?' 2>/dev/null)" || { offline_since=''; return 0; }
-    reg="$(value '+CEREG' "$answer" | awk -F, 'NF>=2 {gsub(/ /,"",$2);print $2}')"
-    case "$reg" in
-        0|2|3|4) :;;
-        *) offline_since=''; return 0;;
-    esac
-    # This is an attempt, even if USB disappears before CFUN can reply.
-    attempts=$((attempts + 1))
-    [ "$window_start" -ne 0 ] || window_start="$now"
-    tmp="$recovery_state.$$"
-    printf '%s %s %s\n' "$window_start" "$attempts" "$now" > "$tmp" &&
-        chmod 600 "$tmp" && mv -f "$tmp" "$recovery_state" || {
-        rm -f "$tmp"; offline_since=''; return 0;
+    answer="$(at 'AT+CEREG?' 'AT+CGACT?' 'AT+CGPADDR' 2>/dev/null)" || {
+        offline_since=''; return 0;
     }
+    reg="$(value '+CEREG' "$answer" | awk -F, 'NF>=2 {gsub(/ /,"",$2);print $2}')"
+    case "$reg" in 0|1|2|3|4|5) :;; *) offline_since=''; return 0;; esac
+    if [ "$reg" = 1 ] || [ "$reg" = 5 ]; then
+        fresh_cgact="$(value_cid1 '+CGACT' "$answer" | tr -d '[:space:]')"
+        fresh_pdp="$(value_cid1 '+CGPADDR' "$answer" | awk -F '"' 'NF>1 {print $2}')"
+        valid_ip "$fresh_pdp" || fresh_pdp=''
+        [ "$fresh_cgact" = 1 ] && [ "$fresh_pdp" != 0.0.0.0 ] || fresh_pdp=''
+        fresh_dhcp="$(ip -4 -o addr show dev "$netdev" 2>/dev/null | awk 'NR==1 {split($4,a,"/");print a[1]}')"
+        if [ -n "$fresh_pdp" ] && [ "$fresh_dhcp" = "$fresh_pdp" ] &&
+           [ "$(ubus call "network.interface.$interface" status 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)" = true ]; then
+            offline_since=''
+            return 0
+        fi
+    fi
     offline_since="$now"
-    log "No network registration for 10 minutes; restarting modem (attempt $attempts/$recovery_max_attempts)"
+    log 'No usable mobile data connection for 10 minutes; restarting modem'
     network_down
     if at 'AT+CFUN=1,1' >/dev/null 2>&1; then
         last_error='modem_recovery_restart'
     else
         last_error='modem_recovery_command_failed'
-        log 'Modem restart command failed; cooldown still applies'
+        log 'Modem restart command failed; retry after another 10 minutes without connection'
     fi
     write_status
 }
@@ -462,6 +456,6 @@ while :; do
     led_update
     write_status
     [ "$1" = --once ] && exit 0
-    recover_registration
+    recover_connection
     sleep "$poll_interval"
 done
