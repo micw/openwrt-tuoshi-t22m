@@ -21,8 +21,9 @@ class RecoveryTests(unittest.TestCase):
     def run_policy(self, *, times=(1000, 1599, 1600), registration=0,
                    sim='ready', serial=True, enabled=True, network=True,
                    autostart=True, owned=False, pdp='', dhcp='', up=False,
-                   recheck='0', fresh_pdp='', fresh_dhcp='', stale_budget=False,
-                   restored_at=None, lost_at=None):
+                   available=True, recheck='0', fresh_pdp='', fresh_dhcp='',
+                   stale_budget=False, restored_at=None, lost_at=None,
+                   malformed='', operator_down_during_at=False):
         for name in ('at-calls', 'network-calls', 'log'):
             (self.dir / name).unlink(missing_ok=True)
         marker = self.dir / 'network-down-owned'
@@ -34,7 +35,6 @@ class RecoveryTests(unittest.TestCase):
             (self.dir / 'recovery.state').write_text('91915 3 95527\n')
         script = '''#!/bin/sh
 RUN_DIR="$TEST_DIR"
-network_down_owned="$RUN_DIR/network-down-owned"
 recovery_delay=600
 registered="$TEST_REG"
 sim_state="$TEST_SIM"
@@ -45,17 +45,25 @@ dhcp_ip="$TEST_DHCP"
 offline_since=''
 last_sim_ok=''
 uci() { case "$*" in *disabled) [ "$TEST_ENABLED" = 1 ] && echo 0 || echo 1;; *proto) echo dhcp;; *device) echo eth1;; esac; }
-ubus() { [ "$TEST_NETWORK" = 1 ] || return 1; printf '{"autostart":%s,"available":true,"up":%s}\\n' "$TEST_AUTOSTART" "$TEST_UP"; }
-jsonfilter() { case "$*" in *autostart) echo "$TEST_AUTOSTART";; *available) echo true;; *up) echo "$TEST_UP";; esac; }
+ubus() { [ "$TEST_NETWORK" = 1 ] || return 1; printf '{"autostart":%s,"available":%s,"up":%s}\\n' "$TEST_AUTOSTART" "$TEST_AVAILABLE" "$TEST_UP"; }
+jsonfilter() { case "$*" in
+    *autostart) [ -f "$RUN_DIR/manual-down" ] && echo false || echo "$TEST_AUTOSTART";;
+    *available) echo "$TEST_AVAILABLE";; *up) echo "$TEST_UP";; esac; }
 ip() { [ -z "$TEST_FRESH_DHCP" ] || printf '2: eth1 inet %s/24 scope global eth1\\n' "$TEST_FRESH_DHCP"; }
 valid_ip() { case "$1" in ''|0.0.0.0) return 1;; *.*.*.*) return 0;; *) return 1;; esac; }
 at() { printf '%s\\n' "$*" >> "$RUN_DIR/at-calls"; case "$*" in
     AT) echo OK;;
-    'AT+CEREG? AT+CGACT? AT+CGPADDR') printf '+CEREG: 3,%s\\n+CGACT: 1,1\\n+CGPADDR: 1,"%s"\\nOK\\n' "$TEST_RECHECK" "$TEST_FRESH_PDP";;
+    'AT+CEREG? AT+CGACT? AT+CGPADDR')
+        [ "$TEST_OPERATOR_DOWN_DURING_AT" = 1 ] && : > "$RUN_DIR/manual-down"
+        case "$TEST_MALFORMED" in
+            error) printf '+CEREG: 3,%s\\nERROR\\n' "$TEST_RECHECK";;
+            truncated) printf '+CEREG: 3,1\\nOK\\n';;
+            *) printf '+CEREG: 3,%s\\n+CGACT: 1,1\\n+CGPADDR: 1,"%s"\\nOK\\n' "$TEST_RECHECK" "$TEST_FRESH_PDP";;
+        esac;;
     'AT+CFUN=1,1') echo OK;; esac; }
 value() { printf '%s\\n' "$2" | sed -n "s/^${1}:[[:space:]]*//p" | head -n 1; }
 value_cid1() { printf '%s\\n' "$2" | sed -n "s/^${1}:[[:space:]]*1,[[:space:]]*//p" | head -n 1; }
-network_down() { echo down >> "$RUN_DIR/network-calls"; }
+network_restart() { [ "$TEST_AUTOSTART" = true ] && [ ! -f "$RUN_DIR/manual-down" ] && [ "$TEST_UP" = true ] && echo restart >> "$RUN_DIR/network-calls"; :; }
 write_status() { :; }
 log() { printf '%s\\n' "$*" >> "$RUN_DIR/log"; }
 recover_connection() {'''+self.policy+'''
@@ -78,10 +86,13 @@ done
                    TEST_ENABLED='1' if enabled else '0',
                    TEST_NETWORK='1' if network else '0',
                    TEST_AUTOSTART='true' if autostart else 'false',
+                   TEST_AVAILABLE='true' if available else 'false',
                    TEST_PDP=pdp, TEST_DHCP=dhcp,
                    TEST_UP='true' if up else 'false',
                    TEST_RECHECK=recheck, TEST_FRESH_PDP=fresh_pdp,
                    TEST_FRESH_DHCP=fresh_dhcp,
+                   TEST_MALFORMED=malformed,
+                   TEST_OPERATOR_DOWN_DURING_AT='1' if operator_down_during_at else '0',
                    TEST_RESTORED_AT='' if restored_at is None else str(restored_at),
                    TEST_LOST_AT='' if lost_at is None else str(lost_at))
         result = subprocess.run(['sh'], input=script, text=True,
@@ -115,9 +126,13 @@ done
             with self.subTest(settings=settings):
                 self.assertEqual(self.run_policy(**settings), [])
 
-    def test_daemon_owned_down_is_not_manual_ifdown(self):
+    def test_manual_ifdown_wins_even_with_stale_daemon_marker(self):
         calls = self.run_policy(autostart=False, owned=True)
-        self.assertEqual(calls.count('AT+CFUN=1,1'), 1, calls)
+        self.assertEqual(calls, [])
+
+    def test_missing_rndis_still_recovers_when_at_port_is_present(self):
+        calls = self.run_policy(available=False, times=(1000, 1600, 2200))
+        self.assertEqual(calls.count('AT+CFUN=1,1'), 2, calls)
 
     def test_connected_interface_is_not_restarted(self):
         calls = self.run_policy(registration=1, pdp='10.0.0.2',
@@ -140,21 +155,49 @@ done
         self.assertIn('AT+CEREG? AT+CGACT? AT+CGPADDR', calls)
         self.assertNotIn('AT+CFUN=1,1', calls)
 
-    def test_interface_ownership_follows_daemon_down_and_up(self):
+    def test_malformed_at_and_operator_ifdown_during_recheck(self):
+        for settings in ({'malformed': 'error'},
+                         {'malformed': 'truncated', 'recheck': '1'},
+                         {'operator_down_during_at': True}):
+            with self.subTest(settings=settings):
+                calls = self.run_policy(**settings)
+                self.assertIn('AT+CEREG? AT+CGACT? AT+CGPADDR', calls)
+                self.assertNotIn('AT+CFUN=1,1', calls)
+
+    def test_network_calls_never_clear_manual_ifdown_or_fallback_to_down(self):
         source = SOURCE.read_text()
-        functions = source.split('network_down_owned=', 1)[1].split('network_restart() {', 1)[0]
-        script = '''RUN_DIR="$TEST_DIR"
-interface=lte
-ubus() { :; }
-network_down_owned=''' + functions + '''
-network_down
-[ -f "$network_down_owned" ] || exit 1
+        functions = source.split('network_up() {', 1)[1].split('\nwrite_status() {', 1)[0]
+        script = '''interface=lte
+ubus() {
+    case "$3" in
+        status) echo '{}';;
+        up|restart|down) echo "$3" >> "$TEST_CALLS";
+            [ "$3" != restart ] || [ "$TEST_RESTART_FAIL" != 1 ];;
+    esac
+}
+jsonfilter() { case "$*" in *autostart) echo "$TEST_AUTOSTART";; *up) echo "$TEST_UP";; esac; }
+network_up() {'''+functions+'''
 network_up
-[ ! -e "$network_down_owned" ] || exit 2
+network_restart
 '''
-        result = subprocess.run(['sh'], input=script, text=True, capture_output=True,
-                                env=dict(os.environ, TEST_DIR=str(self.dir)))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for autostart, up, fail, expected in (
+            ('false', 'true', '0', []),
+            ('true', 'false', '0', ['up']),
+            ('true', 'true', '0', ['up', 'restart']),
+            ('true', 'true', '1', ['up', 'restart']),
+        ):
+            with self.subTest(autostart=autostart, up=up, fail=fail):
+                calls = self.dir / 'network-calls'
+                calls.unlink(missing_ok=True)
+                result = subprocess.run(
+                    ['sh'], input=script, text=True, capture_output=True,
+                    env={**os.environ, 'TEST_CALLS': str(calls),
+                         'TEST_AUTOSTART': autostart, 'TEST_UP': up,
+                         'TEST_RESTART_FAIL': fail})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls.read_text().splitlines() if calls.exists() else [],
+                                 expected)
+                self.assertNotIn('down', expected)
 
 
 if __name__ == '__main__':
