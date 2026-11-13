@@ -2,6 +2,7 @@ msgid ""
 msgstr "Content-Type: text/plain; charset=UTF-8"
 
 #: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:24
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js
 msgid "APN"
 msgstr ""
 
@@ -119,8 +120,8 @@ msgstr ""
 msgid "Read ML352 status and configure the cellular modem"
 msgstr ""
 
-#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:96
-msgid "Read-only live modem status. Refreshes every five seconds."
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js
+msgid "Read-only modem status and configured APN. Refreshes every five seconds."
 msgstr ""
 
 #: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:36

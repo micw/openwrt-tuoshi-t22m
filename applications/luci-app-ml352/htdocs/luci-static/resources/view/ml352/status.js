@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require rpc';
+'require uci';
 'require poll';
 'require dom';
 
@@ -9,6 +10,21 @@ var callStatus = rpc.declare({
 	method: 'status',
 	expect: {}
 });
+
+function loadStatus() {
+	uci.unload('ml352');
+
+	return Promise.all([
+		L.resolveDefault(callStatus(), null),
+		L.resolveDefault(uci.load('ml352'), null)
+	]).then(function(results) {
+		return {
+			status: results[0],
+			apn: results[1] == null ? null :
+				(uci.get('ml352', 'modem', 'apn') || _('Network default'))
+		};
+	});
+}
 
 function display(value) {
 	return value === null || value === undefined || value === '' ? '\u2014' : String(value);
@@ -49,14 +65,18 @@ function row(label, value) {
 }
 
 return view.extend({
-	load: function() {
-		return L.resolveDefault(callStatus(), null);
-	},
+	load: loadStatus,
 
-	renderStatus: function(status) {
+	renderStatus: function(data) {
+		var status = data.status;
+
 		if (!status || status.available === false || status.available === 0)
-			return E('div', { 'class': 'alert-message warning' },
-				_('ML352 live status is unavailable. Check that the modem service is running.'));
+			return E('div', {}, [
+				E('div', { 'class': 'alert-message warning' },
+					_('ML352 live status is unavailable. Check that the modem service is running.')),
+				E('div', { 'class': 'cbi-section' },
+					E('table', { 'class': 'table' }, row(_('APN'), data.apn)))
+			]);
 
 		var stale = Number(status.updated) > 0 &&
 			(Date.now() / 1000 - Number(status.updated) > 90);
@@ -66,6 +86,7 @@ return view.extend({
 			E('table', { 'class': 'table' }, [
 				row(_('SIM state'), simStateLabel(status.sim_state)),
 				row(_('ICCID'), status.iccid),
+				row(_('APN'), data.apn),
 				row(_('Registered'), status.registered == null ? null :
 					(status.registered === true || status.registered === 1 || status.registered === '1' ? _('Yes') : _('No'))),
 				row(_('Registration'), registrationLabel(status.registration)),
@@ -88,22 +109,22 @@ return view.extend({
 		return section;
 	},
 
-	render: function(status) {
+	render: function(data) {
 		var container = E('div');
 		var content = E('div', {}, [
 			E('h2', {}, _('ML352 Status')),
 			E('div', { 'class': 'cbi-map-descr' }, [
-				_('Read-only live modem status. Refreshes every five seconds.'),
+				_('Read-only modem status and configured APN. Refreshes every five seconds.'),
 				' ',
 				_('SIM state and ICCID are checked at most once per minute.')
 			]),
 			container
 		]);
 
-		dom.content(container, this.renderStatus(status));
+		dom.content(container, this.renderStatus(data));
 		poll.add(L.bind(function() {
-			return L.resolveDefault(callStatus(), null).then(L.bind(function(data) {
-				dom.content(container, this.renderStatus(data));
+			return loadStatus().then(L.bind(function(updated) {
+				dom.content(container, this.renderStatus(updated));
 			}, this));
 		}, this), 5);
 

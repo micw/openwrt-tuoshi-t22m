@@ -23,7 +23,7 @@ class RecoveryTests(unittest.TestCase):
                    autostart=True, owned=False, pdp='', dhcp='', up=False,
                    available=True, recheck='0', fresh_pdp='', fresh_dhcp='',
                    stale_budget=False, restored_at=None, lost_at=None,
-                   malformed='', operator_down_during_at=False):
+                   malformed='', operator_down_during_at=False, rndis_recovery=False):
         for name in ('at-calls', 'network-calls', 'log'):
             (self.dir / name).unlink(missing_ok=True)
         marker = self.dir / 'network-down-owned'
@@ -44,6 +44,9 @@ pdp_ip="$TEST_PDP"
 dhcp_ip="$TEST_DHCP"
 offline_since=''
 last_sim_ok=''
+rndis_recovery_needed="$TEST_RNDIS_RECOVERY"
+rndis_attempts=2
+rndis_bind_confirmed=0
 uci() { case "$*" in *disabled) [ "$TEST_ENABLED" = 1 ] && echo 0 || echo 1;; *proto) echo dhcp;; *device) echo eth1;; esac; }
 ubus() { [ "$TEST_NETWORK" = 1 ] || return 1; printf '{"autostart":%s,"available":%s,"up":%s}\\n' "$TEST_AUTOSTART" "$TEST_AVAILABLE" "$TEST_UP"; }
 jsonfilter() { case "$*" in
@@ -93,6 +96,7 @@ done
                    TEST_FRESH_DHCP=fresh_dhcp,
                    TEST_MALFORMED=malformed,
                    TEST_OPERATOR_DOWN_DURING_AT='1' if operator_down_during_at else '0',
+                    TEST_RNDIS_RECOVERY='1' if rndis_recovery else '0',
                    TEST_RESTORED_AT='' if restored_at is None else str(restored_at),
                    TEST_LOST_AT='' if lost_at is None else str(lost_at))
         result = subprocess.run(['sh'], input=script, text=True,
@@ -138,6 +142,19 @@ done
         calls = self.run_policy(registration=1, pdp='10.0.0.2',
                                 dhcp='10.0.0.2', up=True)
         self.assertEqual(calls, [])
+
+    def test_explicit_rndis_bind_failure_overrides_stale_healthy_lease(self):
+        calls = self.run_policy(registration=1, pdp='10.0.0.2',
+                                dhcp='10.0.0.2', fresh_pdp='10.0.0.2',
+                                fresh_dhcp='10.0.0.2', recheck='1', up=True,
+                                rndis_recovery=True, times=(1000, 1599, 1600))
+        self.assertEqual(calls.count('AT+CFUN=1,1'), 1, calls)
+        self.assertIn('AT+CEREG? AT+CGACT? AT+CGPADDR', calls)
+        calls = self.run_policy(registration=1, pdp='10.0.0.2',
+                                dhcp='10.0.0.2', fresh_pdp='10.0.0.2',
+                                fresh_dhcp='10.0.0.2', recheck='1', up=True,
+                                rndis_recovery=True, autostart=False)
+        self.assertNotIn('AT+CFUN=1,1', calls)
 
     def test_registered_without_pdp_or_dhcp_restarts(self):
         for pdp, dhcp, up in (('', '', False), ('10.0.0.2', '', False),

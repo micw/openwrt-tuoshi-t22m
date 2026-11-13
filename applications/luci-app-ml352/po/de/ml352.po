@@ -94,8 +94,8 @@ msgstr "Funktechnologie"
 msgid "Read ML352 status and configure the cellular modem"
 msgstr "ML352-Status lesen und Mobilfunkmodem konfigurieren"
 
-msgid "Read-only live modem status. Refreshes every five seconds."
-msgstr "Aktueller Modemstatus (nur lesbar). Aktualisierung alle fünf Sekunden."
+msgid "Read-only modem status and configured APN. Refreshes every five seconds."
+msgstr "Modemstatus und konfigurierter APN (nur lesbar). Aktualisierung alle fünf Sekunden."
 
 msgid "SIM state and ICCID are checked at most once per minute."
 msgstr "SIM-Status und ICCID werden höchstens einmal pro Minute geprüft."

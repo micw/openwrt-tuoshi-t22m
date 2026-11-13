@@ -50,3 +50,32 @@ the RC1 tag and its assets: always verify the current `SHA256SUMS`.
 
 A release image is not a bootloader installer or a backup of a physical device.
 The source feed does not replace OpenWrt's standard package feeds.
+
+## ML352 data connection (0.1.0-r7)
+
+After registration, `ml352d` sends `AT+CGACT=1,1` followed by
+`AT*NETACT=1,1,1` **regardless of whether an APN username exists**. The
+non-disconnecting setup runs once when the service takes over a connection
+and after a newly observed registration or PDP loss, not every status poll.
+
+A wedged RNDIS data path has a separate, bounded recovery sequence:
+`AT*NETACT=0,1,1` → `AT+CGACT=1,1` → `AT*NETACT=1,1,1`, followed by a fresh
+DHCP request. DNS `0.0.0.0` alone no longer triggers it. Automatic rebind is
+**off by default**, since private APNs may have no access to public hosts.
+To opt in, configure an IPv4 address that reliably answers ICMP *via this
+specific APN*, e.g. on a public Telekom APN:
+
+```sh
+uci set ml352.modem.recovery_probe_ip='1.1.1.1'
+uci commit ml352
+/etc/init.d/ml352 restart
+```
+
+The supervisor pings through the modem interface every 45 seconds only while
+CID 1, DHCP and the network interface are up. Three consecutive failures over
+at least 60 seconds, followed by fresh modem and network checks, permit at
+most two rebinds until the probe succeeds. An unreachable probe alone does
+not authorize a radio reset. Leave this option empty for private APNs unless
+you have a reachable, operator-controlled endpoint; a blocked ping target
+otherwise causes unnecessary rebinds. This offline policy has not yet been
+verified by installing r7 on the working router.

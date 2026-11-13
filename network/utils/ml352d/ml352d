@@ -19,6 +19,7 @@ config_get netdev modem netdev eth1
 config_get interface modem interface lte
 config_get apn modem apn ''
 config_get_bool roaming modem roaming 1
+config_get recovery_probe_ip modem recovery_probe_ip ''
 
 # These board-specific policies are fixed, not user-facing UCI options.
 poll_interval=15
@@ -90,6 +91,14 @@ valid_ip() {
     [ "$(printf '%s' "$1" | awk -F. '{print NF}')" -eq 4 ] || return 1
     printf '%s\n' "$1" | awk -F. '{for(i=1;i<=4;i++) if ($i=="" || $i>255) exit 1}'
 }
+
+if [ -n "$recovery_probe_ip" ]; then
+    if ! valid_ip "$recovery_probe_ip" || [ "$recovery_probe_ip" = 0.0.0.0 ] ||
+       [ "${recovery_probe_ip%%.*}" -ge 224 ] || [ "${recovery_probe_ip%%.*}" -eq 0 ]; then
+        log 'Invalid IPv4 recovery probe; automatic rebind disabled'
+        recovery_probe_ip=''
+    fi
+fi
 
 # Boot, failsafe and sysupgrade use the WLAN LED; S96led gives it back to
 # Wi-Fi after S95done. All three cellular LEDs belong to this service only.
@@ -247,11 +256,178 @@ init_modem() {
         2) network_restart; at 'AT+CFUN=0' >/dev/null 2>&1; at 'AT+CFUN=1' >/dev/null 2>&1; sleep 8;;
         *) last_error='apn_configuration_failed';;
     esac
-    # Automatic RNDIS dial, but do not mistake RNDISCALL=1 for LTE registration.
+    # Keep the modem's automatic dial mode, but do not mistake RNDISCALL=1
+    # for a verified end-to-end data path.
     local r
     r="$(at 'AT+DIALMODE?' 2>/dev/null)" || return 1
     [ "$(value '+DIALMODE' "$r" | tr -d '[:space:]')" = 1 ] && at 'AT+DIALMODE=0' >/dev/null 2>&1
     return 0
+}
+
+setup_attempts=0
+last_setup_at=0
+rndis_attempts=0
+rndis_total_attempts=0  # Bounded even if rebind changes PDP IP repeatedly.
+last_rndis_attempt_at=0
+rndis_bind_confirmed=0
+rndis_recovery_needed=0
+probe_failures=0
+probe_first_failure_at=0
+last_probe_at=0
+# CGACT establishes CID 1 on the cellular side; NETACT separately binds that
+# context to RNDIS. Stock RIL sends NETACT only with a nonempty username; the
+# live Telekom recovery required disconnecting NETACT before a fresh bind.
+# 0=OK, 1=explicit ERROR, 2=echo without confirmation, 3=transport/no reply.
+# Ignore late replies from earlier transactions preceding *this* command's echo.
+rndis_command() {
+    local raw io_rc result
+    raw="$(at "$1" 2>/dev/null)"; io_rc=$?
+    [ "$io_rc" -eq 0 ] && [ -n "$raw" ] || return 3
+    result="$(printf '%s\n' "$raw" | awk -v cmd="$1" '
+        $0 == cmd { seen=1; result=""; next }
+        seen && ($0 == "ERROR" || /^\+CME ERROR:/ || $0 == "NO CARRIER") { result="error" }
+        seen && $0 == "OK" { result="ok" }
+        END { print result }
+    ')"
+    case "$result" in ok) return 0;; error) return 1;; *) return 2;; esac
+}
+
+# The stock setup activates CID 1 after registration, but sends NETACT only
+# when APN credentials contain a username. Bind RNDIS on a new data
+# session regardless of username, without first disconnecting a healthy link.
+# On service startup we cannot distinguish an old, cached lease from a working
+# modem session, so perform the non-disconnecting sequence once even then.
+ensure_setup() {
+    local state now uptime unused activation_rc bind_rc
+    [ "${ML352_NO_NETWORK:-0}" = 1 ] && return 0
+    [ "$sim_state" = ready ] && [ "$registered" -eq 1 ] || return 0
+    [ "$(uci -q get network.$interface.disabled)" != 1 ] &&
+        [ "$(uci -q get network.$interface.proto)" = dhcp ] &&
+        [ "$(uci -q get network.$interface.device)" = "$netdev" ] || return 0
+    state="$(ubus call "network.interface.$interface" status 2>/dev/null)" || return 0
+    [ "$(printf '%s\n' "$state" | jsonfilter -e '@.autostart' 2>/dev/null)" = true ] || return 0
+    [ "$setup_attempts" -lt 2 ] || return 0
+    if [ "$setup_attempts" -gt 0 ] && [ -n "$pdp_ip" ] &&
+       [ "$dhcp_ip" = "$pdp_ip" ] &&
+       [ "$(printf '%s\n' "$state" | jsonfilter -e '@.up' 2>/dev/null)" = true ]; then
+        # A previous setup has converged. Never repeat its AT commands merely
+        # because the modem gave an echo without a final OK.
+        setup_attempts=2
+        return 0
+    fi
+    read -r uptime unused < /proc/uptime || return 0
+    now="${uptime%%.*}"
+    case "$now" in ''|*[!0-9]*) return 0;; esac
+    [ "$last_setup_at" -eq 0 ] ||
+        [ $((now - last_setup_at)) -ge "$retry_interval" ] || return 0
+    setup_attempts=$((setup_attempts + 1))
+    last_setup_at="$now"
+    log 'Activating CID 1 and binding RNDIS after registration'
+    rndis_command 'AT+CGACT=1,1'; activation_rc=$?
+    # A CGACT error must not prevent the final bind; CID 1 may already be up.
+    rndis_command 'AT*NETACT=1,1,1'; bind_rc=$?
+    if [ "$bind_rc" -eq 1 ]; then
+        last_error='rndis_setup_failed'
+        return 0
+    fi
+    if [ "$activation_rc" -ne 0 ] || [ "$bind_rc" -ne 0 ]; then
+        last_error='rndis_setup_unconfirmed'
+    else
+        last_error=''
+    fi
+    sleep 5
+    network_restart
+}
+
+# Missing or 0.0.0.0 DNS does not prove the RNDIS data path is broken.
+# Private APNs may deliberately have no public egress. Only an operator-provided
+# IPv4 target known to answer ICMP through this APN enables automatic redial.
+# Three failures over >=60s with the same PDP/DHCP session permit one bounded
+# disconnect/rebind; command-only replies and a cached lease are not proof of
+# end-to-end connectivity. Never override administrative ifdown.
+ensure_rndis() {
+    local state now uptime unused answer fresh_reg fresh_cgact fresh_pdp
+    local activation_rc bind_rc
+    [ "${ML352_NO_NETWORK:-0}" = 1 ] && return 0
+    [ "$sim_state" = ready ] && [ "$registered" -eq 1 ] &&
+        [ -n "$pdp_ip" ] && [ "$dhcp_ip" = "$pdp_ip" ] || return 0
+    [ "$(uci -q get network.$interface.disabled)" != 1 ] &&
+        [ "$(uci -q get network.$interface.proto)" = dhcp ] &&
+        [ "$(uci -q get network.$interface.device)" = "$netdev" ] || return 0
+    state="$(ubus call "network.interface.$interface" status 2>/dev/null)" || return 0
+    [ "$(printf '%s\n' "$state" | jsonfilter -e '@.autostart' 2>/dev/null)" = true ] || return 0
+    [ "$(printf '%s\n' "$state" | jsonfilter -e '@.up' 2>/dev/null)" = true ] || return 0
+    [ -n "$recovery_probe_ip" ] || return 0
+    read -r uptime unused < /proc/uptime || return 0
+    now="${uptime%%.*}"
+    case "$now" in ''|*[!0-9]*) return 0;; esac
+    [ "$last_setup_at" -eq 0 ] ||
+        [ $((now - last_setup_at)) -ge "$retry_interval" ] || return 0
+    [ "$last_probe_at" -eq 0 ] ||
+        [ $((now - last_probe_at)) -ge "$retry_interval" ] || return 0
+    last_probe_at="$now"
+    if ping -4 -n -q -I "$netdev" -c 1 -W 2 "$recovery_probe_ip" >/dev/null 2>&1; then
+        probe_failures=0; probe_first_failure_at=0
+        rndis_attempts=0; rndis_total_attempts=0; rndis_bind_confirmed=0
+        rndis_recovery_needed=0; last_error=''
+        return 0
+    fi
+    [ "$probe_failures" -gt 0 ] || probe_first_failure_at="$now"
+    probe_failures=$((probe_failures + 1))
+    if [ "$rndis_total_attempts" -ge 2 ] || [ "$rndis_attempts" -ge 2 ] ||
+       { [ "$rndis_attempts" -eq 1 ] && [ "$rndis_bind_confirmed" -eq 1 ]; }; then
+        [ "$rndis_recovery_needed" -eq 1 ] && last_error='rndis_bind_failed' || last_error='rndis_probe_failed'
+        return 0
+    fi
+    [ "$probe_failures" -ge 3 ] &&
+        [ $((now - probe_first_failure_at)) -ge 60 ] || {
+            last_error='rndis_probe_unreachable'
+            return 0
+        }
+    [ "$last_rndis_attempt_at" -eq 0 ] ||
+        [ $((now - last_rndis_attempt_at)) -ge "$retry_interval" ] || return 0
+    # Recheck ownership and registration immediately before disconnecting.
+    [ "$(uci -q get network.$interface.disabled)" != 1 ] &&
+        [ "$(uci -q get network.$interface.proto)" = dhcp ] &&
+        [ "$(uci -q get network.$interface.device)" = "$netdev" ] || return 0
+    state="$(ubus call "network.interface.$interface" status 2>/dev/null)" || return 0
+    [ "$(printf '%s\n' "$state" | jsonfilter -e '@.autostart' 2>/dev/null)" = true ] &&
+        [ "$(printf '%s\n' "$state" | jsonfilter -e '@.up' 2>/dev/null)" = true ] || return 0
+    answer="$(at 'AT+CEREG?' 'AT+CGACT?' 'AT+CGPADDR' 2>/dev/null)" || return 0
+    [ "$(printf '%s\n' "$answer" | sed '/^[[:space:]]*$/d' | tail -n 1)" = OK ] || return 0
+    fresh_reg="$(value '+CEREG' "$answer" | awk -F, 'NF>=2 {gsub(/ /,"",$2);print $2}')"
+    case "$fresh_reg" in 1|5) :;; *) return 0;; esac
+    fresh_cgact="$(value_cid1 '+CGACT' "$answer" | tr -d '[:space:]')"
+    fresh_pdp="$(value_cid1 '+CGPADDR' "$answer" | awk -F '"' 'NF>1 {print $2}')"
+    [ "$fresh_cgact" = 1 ] && [ "$fresh_pdp" = "$pdp_ip" ] &&
+        [ "$(ip -4 -o addr show dev "$netdev" 2>/dev/null | awk 'NR==1 {split($4,a,"/");print a[1]}')" = "$pdp_ip" ] || return 0
+    # No single serial transaction holds the lock across commands; always
+    # attempt the final bind even if NETACT=0 or CGACT gives no final OK.
+    log 'Configured data-path probe failed; rebinding RNDIS CID 1'
+    rndis_command 'AT*NETACT=0,1,1' || :
+    rndis_command 'AT+CGACT=1,1'; activation_rc=$?
+    rndis_command 'AT*NETACT=1,1,1'; bind_rc=$?
+    rndis_attempts=$((rndis_attempts + 1))
+    rndis_total_attempts=$((rndis_total_attempts + 1))
+    last_rndis_attempt_at="$now"
+    if [ "$bind_rc" -eq 1 ]; then
+        last_error='rndis_bind_failed'
+        if [ "$rndis_attempts" -ge 2 ]; then
+            # Only an explicit modem ERROR after disconnect permits the
+            # existing delayed CFUN recovery; ping failures never do.
+            rndis_recovery_needed=1
+            log 'RNDIS bind returned ERROR twice; modem recovery will retry'
+        fi
+        return 0
+    fi
+    if [ "$bind_rc" -ne 0 ] || [ "$activation_rc" -ne 0 ]; then
+        rndis_bind_confirmed=0
+        last_error='rndis_bind_unconfirmed'
+    else
+        rndis_bind_confirmed=1
+    fi
+    sleep 5
+    network_restart  # Fresh DHCPDISCOVER after the asynchronous RNDIS rebind.
 }
 
 # A sustained missing cellular data connection restarts the modem after 10
@@ -284,7 +460,8 @@ recover_connection() {
         offline_since=''
         return 0
     fi
-    if [ "$registered" -eq 1 ] && [ -n "$pdp_ip" ] &&
+    if [ "$rndis_recovery_needed" -ne 1 ] &&
+       [ "$registered" -eq 1 ] && [ -n "$pdp_ip" ] &&
        [ "$dhcp_ip" = "$pdp_ip" ] && [ "$netifd_up" = true ]; then
         offline_since=''
         return 0
@@ -315,7 +492,8 @@ recover_connection() {
         valid_ip "$fresh_pdp" || fresh_pdp=''
         [ "$fresh_cgact" = 1 ] && [ "$fresh_pdp" != 0.0.0.0 ] || fresh_pdp=''
         fresh_dhcp="$(ip -4 -o addr show dev "$netdev" 2>/dev/null | awk 'NR==1 {split($4,a,"/");print a[1]}')"
-        if [ -n "$fresh_pdp" ] && [ "$fresh_dhcp" = "$fresh_pdp" ] &&
+        if [ "$rndis_recovery_needed" -ne 1 ] &&
+           [ -n "$fresh_pdp" ] && [ "$fresh_dhcp" = "$fresh_pdp" ] &&
            [ "$(ubus call "network.interface.$interface" status 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)" = true ]; then
             offline_since=''
             return 0
@@ -333,6 +511,9 @@ recover_connection() {
     offline_since="$now"
     log 'No usable mobile data connection for 10 minutes; restarting modem'
     if at 'AT+CFUN=1,1' >/dev/null 2>&1; then
+        setup_attempts=0; last_setup_at=0
+        rndis_attempts=0; rndis_total_attempts=0; rndis_bind_confirmed=0; rndis_recovery_needed=0
+        probe_failures=0; probe_first_failure_at=0; last_probe_at=0
         last_error='modem_recovery_restart'
     else
         last_error='modem_recovery_command_failed'
@@ -351,7 +532,9 @@ while :; do
     if [ ! -c "$at_port" ]; then
         sim_state=unavailable registered=0 registration=offline rat=unknown csq='' rssi='' band='' pdp_ip='' dhcp_ip=''
         iccid=''
-        offline_since=''; last_sim_ok=''
+        offline_since=''; last_sim_ok=''; setup_attempts=0; last_setup_at=0
+        rndis_attempts=0; rndis_total_attempts=0; rndis_bind_confirmed=0; rndis_recovery_needed=0
+        probe_failures=0; probe_first_failure_at=0; last_probe_at=0
         if [ -n "$last_pdp" ]; then network_restart; fi
         last_pdp=''
         last_error='at_port_missing'; led_update; write_status; sleep "$poll_interval"; continue
@@ -365,7 +548,9 @@ while :; do
         read_iccid
         case "$?" in
             0) sim_state=ready; read -r sim_uptime _ < /proc/uptime; last_sim_ok="${sim_uptime%%.*}";;
-            2) sim_state=absent; iccid=''; last_sim_ok=''; offline_since='';;
+            2) sim_state=absent; iccid=''; last_sim_ok=''; offline_since=''; setup_attempts=0
+               rndis_attempts=0; rndis_total_attempts=0; rndis_bind_confirmed=0; rndis_recovery_needed=0
+               probe_failures=0; probe_first_failure_at=0; last_probe_at=0;;
             *) :;;  # Keep cache on a transient AT/serial failure.
         esac
     fi
@@ -428,6 +613,16 @@ while :; do
     [ "$new_cgact" = 1 ] && [ "$pdp_ip" != 0.0.0.0 ] || pdp_ip=''
     dhcp_ip="$(ip -4 -o addr show dev "$netdev" 2>/dev/null | awk 'NR==1 {split($4,a,"/"); print a[1]}')"
     valid_ip "$dhcp_ip" || dhcp_ip=''
+    # A new registration or a lost PDP is a new setup opportunity; a stale
+    # DHCP lease alone must never trigger periodic setup commands.
+    if [ "$registered" -eq 0 ] || { [ -n "$last_pdp" ] && [ -z "$pdp_ip" ]; }; then
+        setup_attempts=0
+        last_setup_at=0
+        probe_failures=0; probe_first_failure_at=0; last_probe_at=0
+        if [ "$registered" -eq 0 ]; then
+            rndis_attempts=0; rndis_bind_confirmed=0; rndis_recovery_needed=0
+        fi
+    fi
 
     # Radio resets can lose the configured roaming policy. Keep this network
     # policy check independent from the once-per-minute SIM identity query.
@@ -442,10 +637,21 @@ while :; do
         esac
     fi
 
+    ensure_setup
     if [ "$registered" -eq 1 ] && [ -n "$pdp_ip" ]; then
-        last_error=''
+        if [ "$dhcp_ip" = "$pdp_ip" ]; then
+            case "$last_error" in rndis_bind_*|rndis_probe_*) :;; *) last_error='';; esac
+        else
+            case "$last_error" in rndis_setup_failed|rndis_setup_unconfirmed) :;; *) last_error='';; esac
+        fi
         if [ "$last_pdp" != "$pdp_ip" ]; then
             log 'PDP IP changed; DHCP will obtain new lease'
+            if [ -n "$last_pdp" ]; then
+                probe_failures=0; probe_first_failure_at=0; last_probe_at=0
+                rndis_attempts=0; rndis_bind_confirmed=0; rndis_recovery_needed=0
+                offline_since=''
+                last_error=''
+            fi
             last_pdp="$pdp_ip"; last_renew=0
         fi
         now="$(date +%s)"
@@ -459,10 +665,14 @@ while :; do
         fi
     else
         netifd_up="$(ubus call "network.interface.$interface" status 2>/dev/null | jsonfilter -e '@.up' 2>/dev/null)"
-        if [ -n "$last_pdp" ]; then network_restart; fi
+        if [ -n "$last_pdp" ]; then
+            network_restart
+            probe_failures=0; probe_first_failure_at=0; last_probe_at=0
+        fi
         last_pdp=''
         [ "$registered" -eq 1 ] && last_error='pdp_inactive' || last_error='not_registered'
     fi
+    ensure_rndis
     led_update
     write_status
     [ "$1" = --once ] && exit 0
