@@ -151,6 +151,8 @@ jobs:
             -s lt22m-local-feed/tests -p test_host_dumpimage.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s lt22m-local-feed/tests -p test_modem_recovery.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s lt22m-local-feed/tests -p test_modem_rndis.py -v
           if [ "$FLAVOR" = stock ]; then
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
               -s lt22m-local-feed/tests -p test_stock_guard.py -v
