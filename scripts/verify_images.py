@@ -2,6 +2,7 @@
 """Fail closed on unexpected LT22M release images and missing embedded packages."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,18 @@ EXPECTED_PACKAGES = {
     "kmod-crypto-lib-chacha20poly1305", "kmod-udptunnel4",
 }
 PREFIX = "openwrt-ramips-mt76x8-"
+
+
+def host_dumpimage(tree):
+    makefile = (tree / "package/boot/uboot-tools/Makefile").read_text()
+    matches = re.findall(r"^PKG_VERSION:=(\d{4}\.\d{2})$", makefile, re.MULTILINE)
+    assert len(matches) == 1, "Unexpected U-Boot tools version"
+    version = matches[0]
+    candidates = [tree / f"build_dir/host/u-boot-{prefix}{version}/tools/dumpimage"
+                  for prefix in ("v", "")]
+    found = [path for path in candidates if path.is_file()]
+    assert len(found) == 1, f"Missing or ambiguous dumpimage for U-Boot {version}"
+    return found[0]
 
 
 def main():
@@ -30,7 +43,7 @@ def main():
     missing = EXPECTED_PACKAGES - installed
     assert not missing, f"Missing image packages: {sorted(missing)}"
     magic = bytes.fromhex("27051956" if flavor == "fullflash" else "27151967")
-    dumpimage = tree / "build_dir/host/u-boot-2026.07/tools/dumpimage"
+    dumpimage = host_dumpimage(tree)
     fwtool = tree / "staging_dir/host/bin/fwtool"
     assert dumpimage.is_file() and fwtool.is_file(), "Missing host image verification tools"
     for name in names:

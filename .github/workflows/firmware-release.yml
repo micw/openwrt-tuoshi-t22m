@@ -21,11 +21,11 @@ jobs:
       matrix:
         include:
           - flavor: stock
-            source: e2997ebc89f2ec17bc58d6d6258a0fc03b07e9b9
+            source: 8082d0e343d91a255451f83dfb2727ad05823a36
             source_dir: openwrt-lt22m-stock
             config: stock-v1.config
           - flavor: fullflash
-            source: 81cc3e5e33f122439efa23f9dc9776a18f132993
+            source: 84242802b904c239b4dd86524f1eaea64bfcbf34
             source_dir: openwrt-lt22m-new-layout
             config: fullflash-v1.config
     steps:
@@ -147,6 +147,8 @@ jobs:
           fi
           export LT22M_REVISION="${LT22M_RELEASE_VERSION}-${SOURCE_SHA:0:7}"
           python3 lt22m-local-feed/scripts/verify_images.py "$FLAVOR" "$SOURCE_DIR"
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s lt22m-local-feed/tests -p test_host_dumpimage.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s lt22m-local-feed/tests -p test_modem_recovery.py -v
           if [ "$FLAVOR" = stock ]; then
