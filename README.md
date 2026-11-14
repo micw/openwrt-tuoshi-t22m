@@ -34,10 +34,13 @@ stock B/recovery space at and beyond `0x7c0000`; it does not write mtd0,
 Environment or Factory. Keep an external SPI recovery method for an interrupted
 loader write. Never force an incompatible image through a failed board check.
 
-The built factory image must also pass the original OEM web uploader. The
-7104-KiB OpenWrt image cap is *not* proof of OEM acceptance, particularly when
-including the bundled loader and WireGuard packages. RC5 is a prerelease
-until its exact factory binary is checked on hardware.
+The built factory image must also pass the original OEM web updater. Offline
+inspection of stock `jhttpd` shows an upload-length check against the runtime
+`Firmware` MTD size (`0x770000` bytes = 7616 KiB), **not** the historical
+6150-KiB guess. Our 7104-KiB build cap is below that bound, but neither bound
+proves acceptance: the updater also checks OEM image identity/CRC and requires
+free `/tmp` RAM for staging. RC5's exact factory binary has not been uploaded
+through the OEM UI on hardware; treat that first-install step as unverified.
 
 These custom kernel modules match **only** the firmware built alongside them;
 OpenWrt's public snapshot kmods use a different kernel ABI. The generated

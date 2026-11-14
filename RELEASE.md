@@ -13,7 +13,10 @@ readback → `sysupgrade -n` to the fullflash image, without rebooting between
 loader and firmware writes. Loader and migration mechanisms were exercised
 in development; this exact RC5 image sequence has not yet been device-tested. The firmware image never automatically flashes
 the loader. The exact RC5 factory image still needs OEM-web acceptance testing;
-its OpenWrt size check is not a measured stock-updater limit. Inspect the
+stock `jhttpd` bounds uploads by the 0x770000-byte Firmware MTD (and checks
+identity/CRC and available staging RAM), while the older 6150-KiB estimate
+was only conservative. Our 7104-KiB OpenWrt cap fits the known MTD bound,
+not a device-tested guarantee of OEM upload success. Inspect the
 protected partitions and keep an off-device recovery copy before mtd0 writes.
 
 RC4 corrects the ML352 LuCI band label: the German status page now shows "Frequenzband" instead of LuCI-Base's conflicting "Frequenztyp". For ten LTE band numbers offered by the archived stock ASR band selector it appends the nominal standardized band frequency, for example `20 (800 MHz)`; unknown bands and non-LTE modes retain the raw modem value. The frequency is a band name, not an exact measured carrier frequency or a claim that every listed band is supported by this particular modem. The German LuCI translation package is versioned separately so existing installations receive the new string. The modem service itself is unchanged from RC3.
