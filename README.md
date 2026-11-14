@@ -77,5 +77,19 @@ at least 60 seconds, followed by fresh modem and network checks, permit at
 most two rebinds until the probe succeeds. An unreachable probe alone does
 not authorize a radio reset. Leave this option empty for private APNs unless
 you have a reachable, operator-controlled endpoint; a blocked ping target
-otherwise causes unnecessary rebinds. This offline policy has not yet been
-verified by installing r7 on the working router.
+otherwise causes unnecessary rebinds. The rebind policy has offline tests;
+a controlled hardware failure/recovery test remains outstanding.
+
+## ML352 band display
+
+LuCI shows the raw numeric `AT*BANDIND?` band value. When `AT^SYSINFO` also
+identifies LTE and the number matches one of B1/B3/B5/B7/B8/B20/B28/B38/B40/B41,
+it adds that standardized band's **nominal** MHz name, e.g. `20 (800 MHz)`.
+This is not the measured carrier frequency or channel bandwidth. Unknown
+numbers and non-LTE radio modes retain the raw modem value. The stock ASR
+firmware permits those ten LTE band-lock switches for its JD3_AFL variant;
+this does **not** establish that the actual LT22M modem has that variant or
+that these switches exhaust its hardware RF capabilities. No ML352-specific
+`AT*BANDIND?` manual or complete 3G band list has been verified. The ten
+band-lock choices come from the separately archived Tuoshi ASR stock UI;
+nominal LTE frequencies follow [ETSI TS 136 101, table 5.5-1](https://www.etsi.org/deliver/etsi_ts/136100_136199/136101/15.09.00_60/ts_136101v150900p.pdf).

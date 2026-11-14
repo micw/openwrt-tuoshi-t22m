@@ -14,8 +14,8 @@ msgstr ""
 msgid "Allow roaming"
 msgstr ""
 
-#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js:76
-msgid "Band"
+#: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/status.js
+msgid "ML352 frequency band"
 msgstr ""
 
 #: package/luci-app-ml352/htdocs/luci-static/resources/view/ml352/config.js:15

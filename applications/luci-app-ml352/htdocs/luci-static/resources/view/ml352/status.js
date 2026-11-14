@@ -57,6 +57,30 @@ function simStateLabel(value) {
 	}
 }
 
+// Nominal standardized LTE band frequencies, not the exact carrier frequency
+// or a list of this module's RF capabilities. Unknown/other-RAT values stay raw.
+var lteBandMHz = {
+	'1': 2100,
+	'3': 1800,
+	'5': 850,
+	'7': 2600,
+	'8': 900,
+	'20': 800,
+	'28': 700,
+	'38': 2600,
+	'40': 2300,
+	'41': 2500
+};
+
+function bandLabel(status) {
+	var band = status.band == null ? '' : String(status.band);
+
+	if (status.rat === 'lte' && Object.prototype.hasOwnProperty.call(lteBandMHz, band))
+		return band + ' (' + lteBandMHz[band] + ' MHz)';
+
+	return status.band;
+}
+
 function row(label, value) {
 	return E('tr', { 'class': 'tr' }, [
 		E('td', { 'class': 'td', 'width': '33%' }, E('strong', {}, label)),
@@ -94,7 +118,7 @@ return view.extend({
 				row(_('Operator'), status.operator),
 				row(_('Signal quality (CSQ)'), status.csq),
 				row(_('RSSI (dBm)'), status.rssi_dbm),
-				row(_('Band'), status.band),
+				row(_('ML352 frequency band'), bandLabel(status)),
 				row(_('PDP IP address'), status.pdp_ip),
 				row(_('DHCP IP address'), status.dhcp_ip),
 				row(_('Last error'), status.last_error),

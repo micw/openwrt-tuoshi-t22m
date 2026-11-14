@@ -19,7 +19,7 @@ msgstr "AT-Seriellport"
 msgid "Allow roaming"
 msgstr "Roaming erlauben"
 
-msgid "Band"
+msgid "ML352 frequency band"
 msgstr "Frequenzband"
 
 msgid "Configure the ML352 cellular modem. Save & Apply reloads the modem service."
