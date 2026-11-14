@@ -21,7 +21,7 @@ jobs:
       matrix:
         include:
           - flavor: stock
-            source: 8082d0e343d91a255451f83dfb2727ad05823a36
+            source: 84242802b904c239b4dd86524f1eaea64bfcbf34
             source_dir: openwrt-lt22m-stock
             config: stock-v1.config
           - flavor: fullflash
@@ -110,6 +110,7 @@ jobs:
           esac
           for symbol in "TARGET_ramips_mt76x8_DEVICE_$device" \
             PACKAGE_lt22m-modem-ui PACKAGE_ml352d PACKAGE_luci-app-ml352 \
+            PACKAGE_lt22m-bootloader PACKAGE_u-boot-mt7628_tuoshi_lt22m \
             PACKAGE_kmod-wireguard PACKAGE_wireguard-tools PACKAGE_luci-proto-wireguard; do
             awk -v name="CONFIG_$symbol=y" '$0 == name { found=1 } END { exit !found }' .config
           done
@@ -155,14 +156,14 @@ jobs:
             -s lt22m-local-feed/tests -p test_modem_rndis.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s lt22m-local-feed/tests -p test_luci_band.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s "$SOURCE_DIR/package/utils/lt22m-bootloader/tests" -p 'test_*.py' -v
           if [ "$FLAVOR" = stock ]; then
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
               -s lt22m-local-feed/tests -p test_stock_guard.py -v
           else
             PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
               -s "$SOURCE_DIR/tests" -p 'test_lt22m*.py' -v
-            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-              -s "$SOURCE_DIR/package/utils/lt22m-bootloader/tests" -p 'test_*.py' -v
           fi
       - name: Stage only expected images
         env:

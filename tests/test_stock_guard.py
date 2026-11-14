@@ -3,15 +3,28 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import unittest
 
-TREE = Path(__file__).resolve().parents[2] / "openwrt-lt22m-stock"
+TREE = Path(os.environ.get("LT22M_STOCK_SOURCE_DIR",
+                           Path(__file__).resolve().parents[2] / "openwrt-lt22m-stock"))
 SCRIPT = TREE / "target/linux/ramips/mt76x8/base-files/lib/upgrade/platform.sh"
 IMAGE = TREE / "bin/targets/ramips/mt76x8/openwrt-ramips-mt76x8-tuoshi_lt22m-squashfs-sysupgrade.bin"
 HOST_FWTOOL = TREE / "staging_dir/host/bin/fwtool"
-HOST_DUMPIMAGE = TREE / "build_dir/host/u-boot-2026.07/tools/dumpimage"
+
+
+def host_dumpimage():
+    makefile = (TREE / "package/boot/uboot-tools/Makefile").read_text()
+    match = re.search(r"^PKG_VERSION:=(\d{4}\.\d{2})$", makefile, re.MULTILINE)
+    assert match, "U-Boot tools source version missing"
+    version = match.group(1)
+    candidates = [TREE / f"build_dir/host/u-boot-{prefix}{version}/tools/dumpimage"
+                  for prefix in ("v", "")]
+    found = [path for path in candidates if path.is_file()]
+    assert len(found) == 1, f"Missing or ambiguous host dumpimage for U-Boot {version}"
+    return found[0]
 LABELS = ("u-boot", "u-boot-env", "factory", "fwconcat0", "stock-storage",
           "fwconcat1", "stock-firmware2", "fwconcat2", "firmware")
 SIZES = (0x30000, 0x10000, 0x10000, 0x770000, 0x40000,
@@ -23,9 +36,9 @@ OFFSETS = (0, 0x30000, 0x40000, 0x50000, 0x7c0000,
 class StockGuard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        for prerequisite in (SCRIPT, IMAGE, HOST_FWTOOL, HOST_DUMPIMAGE):
-            if not prerequisite.is_file():
-                raise unittest.SkipTest(f"build prerequisite missing: {prerequisite}")
+        for prerequisite in (SCRIPT, IMAGE, HOST_FWTOOL):
+            assert prerequisite.is_file(), f"build prerequisite missing: {prerequisite}"
+        cls.dumpimage = host_dumpimage()
         cls.original_image = IMAGE.read_bytes()
 
     def setUp(self):
@@ -34,7 +47,7 @@ class StockGuard(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bin = self.root / "bin"
         self.bin.mkdir()
-        (self.bin / "dumpimage").symlink_to(HOST_DUMPIMAGE)
+        (self.bin / "dumpimage").symlink_to(self.dumpimage)
         (self.bin / "fwtool").symlink_to(HOST_FWTOOL)
         self.put("bin/jsonfilter", "#!/usr/bin/env python3\nimport json,sys\n"
                  "d=json.load(sys.stdin)\n"

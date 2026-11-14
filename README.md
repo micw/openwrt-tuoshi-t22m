@@ -17,13 +17,27 @@ three distinct LT22M images, each with the modem service, LuCI modem UI,
 | `tuoshi_lt22m-squashfs-sysupgrade.bin` | Stock-layout OpenWrt sysupgrade. |
 | `tuoshi_lt22m_fullflash-squashfs-sysupgrade.bin` | Fullflash-layout OpenWrt sysupgrade with the checked OpenWrt SPL-family loader (standard uImage magic). **Not** an OEM factory upload. |
 
-The fullflash migration from a stock layout requires an already installed,
-validated OpenWrt SPL-family loader and `sysupgrade -n`: the stock B/recovery
-area at and beyond 0x7c0000 is erased. The loader itself occupies SPI
-0x00000–0x2ffff and is never written by these release-image builds. Preserve
-an off-device backup and external SPI recovery before any loader migration.
-Do not force an image onto a different board or loader; the runtime upgrade
-guards additionally validate the physical MTD layout and loader identity.
+Starting with RC5, both device images are built from the *same* pinned
+fullflash-capable OpenWrt fork commit, with distinct stock and fullflash device
+profiles. The stock-layout image bundles the `lt22m-bootloader` tool and its
+matching SPL/U-Boot binary, but installing the image never writes mtd0. After
+booting the OEM-uploaded stock-layout factory image, inspect the live layout
+and bootloader with `lt22m-bootloader inspect`, save an off-device backup, then
+explicitly run `lt22m-bootloader flash bundled`. This interactive operation
+writes only mtd0 (SPI `0x000000–0x02ffff`), checks the full readback and does
+not reboot. Without an intervening reboot, use `sysupgrade -T -n` followed by
+`sysupgrade -n` with the matching fullflash sysupgrade image. The stock-layout
+sysupgrade hook checks the OpenWrt SPL-family marker **and** a CRC-valid
+second stage, physical MTD layout, firmware image and no-settings migration
+before writing firmware in its RAM stage. This conversion destroys the old
+stock B/recovery space at and beyond `0x7c0000`; it does not write mtd0,
+Environment or Factory. Keep an external SPI recovery method for an interrupted
+loader write. Never force an incompatible image through a failed board check.
+
+The built factory image must also pass the original OEM web uploader. The
+7104-KiB OpenWrt image cap is *not* proof of OEM acceptance, particularly when
+including the bundled loader and WireGuard packages. RC5 is a prerelease
+until its exact factory binary is checked on hardware.
 
 These custom kernel modules match **only** the firmware built alongside them;
 OpenWrt's public snapshot kmods use a different kernel ABI. The generated

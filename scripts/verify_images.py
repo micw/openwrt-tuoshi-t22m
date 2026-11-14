@@ -9,7 +9,8 @@ import sys
 
 EXPECTED_PACKAGES = {
     "ml352d", "luci-app-ml352", "lt22m-modem-ui", "kmod-wireguard",
-    "wireguard-tools", "luci-proto-wireguard", "kmod-crypto-lib-curve25519",
+    "wireguard-tools", "luci-proto-wireguard", "lt22m-bootloader",
+    "kmod-crypto-lib-curve25519",
     "kmod-crypto-lib-chacha20poly1305", "kmod-udptunnel4",
 }
 PREFIX = "openwrt-ramips-mt76x8-"
