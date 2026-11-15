@@ -1,26 +1,63 @@
-Three firmware images for Tuoshi LT22M, built from pinned OpenWrt fork commits with the ML352 modem service/UI and WireGuard kernel module, tools and LuCI protocol included in every image. `SHA256SUMS` and `BUILD_INFO.txt` accompany the images.
+# OpenWrt for the Tuoshi LT22M
 
-- `*tuoshi_lt22m-squashfs-factory.bin`: OEM stock-layout factory uploader (custom OEM uImage magic).
-- `*tuoshi_lt22m-squashfs-sysupgrade.bin`: stock-layout OpenWrt sysupgrade.
-- `*tuoshi_lt22m_fullflash-squashfs-sysupgrade.bin`: fullflash OpenWrt sysupgrade, **not** an OEM upload. It requires the checked OpenWrt SPL-family loader. Migrating from stock to fullflash additionally needs `sysupgrade -n` and erases the original B/recovery area; it does not flash the loader.
+Experimental firmware for the Tuoshi LT22M 4G router. These images include the
+ML352 modem service and LuCI interface, German LuCI translations, and WireGuard.
+They are built together from pinned OpenWrt and package-feed sources; see
+`BUILD_INFO.txt` for the exact commits and `SHA256SUMS` for the downloaded files.
+No device-specific Factory data, credentials or private keys are included.
 
-RC5 builds both stock-layout and fullflash images from the same pinned
-fullflash-capable OpenWrt fork. Unlike RC4's stock image, the RC5 stock image
-includes `lt22m-bootloader` and the guarded stock→fullflash sysupgrade hook.
-The intended path is OEM-web stock factory → booted stock-layout OpenWrt
-→ `lt22m-bootloader inspect` / explicit `flash bundled` with full mtd0
-readback → `sysupgrade -n` to the fullflash image, without rebooting between
-loader and firmware writes. Loader and migration mechanisms were exercised
-in development; this exact RC5 image sequence has not yet been device-tested. The firmware image never automatically flashes
-the loader. The exact RC5 factory image still needs OEM-web acceptance testing;
-stock `jhttpd` bounds uploads by the 0x770000-byte Firmware MTD (and checks
-identity/CRC and available staging RAM), while the older 6150-KiB estimate
-was only conservative. Our 7104-KiB OpenWrt cap fits the known MTD bound,
-not a device-tested guarantee of OEM upload success. Inspect the
-protected partitions and keep an off-device recovery copy before mtd0 writes.
+## Choose the image for your bootloader and flash layout
 
-RC4 corrects the ML352 LuCI band label: the German status page now shows "Frequenzband" instead of LuCI-Base's conflicting "Frequenztyp". For ten LTE band numbers offered by the archived stock ASR band selector it appends the nominal standardized band frequency, for example `20 (800 MHz)`; unknown bands and non-LTE modes retain the raw modem value. The frequency is a band name, not an exact measured carrier frequency or a claim that every listed band is supported by this particular modem. The German LuCI translation package is versioned separately so existing installations receive the new string. The modem service itself is unchanged from RC3.
+| Release file | Use |
+| --- | --- |
+| `openwrt-ramips-mt76x8-tuoshi_lt22m-squashfs-factory.bin` | **First OpenWrt installation through the original stock web updater.** OEM-compatible uImage for the original bootloader and two-slot *stock layout*. It writes stock slot A; it does not install a bootloader. |
+| `openwrt-ramips-mt76x8-tuoshi_lt22m-squashfs-sysupgrade.bin` | Subsequent **stock-layout OpenWrt** upgrades. Use with `sysupgrade`, **not** the OEM web updater. |
+| `openwrt-ramips-mt76x8-tuoshi_lt22m_fullflash-squashfs-sysupgrade.bin` | Migration to, or upgrade of, **fullflash OpenWrt**. Standard uImage; requires the compatible LT22M OpenWrt SPL/U-Boot already in mtd0. **Never upload this file to the stock web updater.** |
 
-RC3 updates the ML352 supervisor and LuCI status: after registration it sends `AT+CGACT=1,1` followed by `AT*NETACT=1,1,1` without depending on an APN username, and LuCI displays the configured APN. For an already wedged data path it retains the separate `NETACT=0 → CGACT=1 → NETACT=1` recovery. DNS `0.0.0.0` alone no longer triggers a disconnect. Automatic rebind requires an explicitly configured IPv4 ping target reachable through this APN (`ml352.modem.recovery_probe_ip`); it is off by default to avoid disconnects on private APNs. Three failed probes over at least a minute, fresh registration/PDP/network checks and a bounded retry are required; a failed ping alone never authorizes a radio reset. The previously introduced ten-minute modem restart for a genuinely missing mobile connection, manual-ifdown protection and stock/fullflash upgrade guards remain. Normal fullflash-to-fullflash sysupgrade can preserve the existing configuration; `-n` is only required for a stock-to-fullflash migration.
+In the **stock layout**, the original bootloader remains installed. OpenWrt
+uses the first firmware slot beginning at `0x50000`; stock Storage and firmware
+slot B remain separate. This layout preserves the original bootloader's B→A
+recovery behavior.
 
-The firmware reports its release tag as its OpenWrt release and the tag plus pinned OpenWrt source commit as its revision, rather than the misleading `r0-1eaea67` from shallow Git history. The packages are compiled for the release image's own kernel ABI. Do not force public OpenWrt snapshot kernel modules onto this firmware. No device-specific Factory contents, bootloader/environment backups, personal credentials or WireGuard private keys are included.
+In the **fullflash layout**, the replacement bootloader uses a single firmware
+partition from `0x50000` to the end of the 16-MiB SPI NOR. The former Storage,
+second firmware slot and stock B→A fallback are removed. The bootloader
+(`0x00000–0x2ffff`), Environment (`0x30000–0x3ffff`) and unique Factory data
+(`0x40000–0x4ffff`) are separate from that firmware partition.
+
+## From stock to fullflash
+
+1. Install the **stock-layout factory image** through the original web UI and
+   boot OpenWrt. Save verified off-device copies of the bootloader, Environment,
+   Factory, stock Storage and firmware slot B before changing the layout.
+2. In the running stock-layout OpenWrt, use `lt22m-bootloader inspect` to check
+   the board, flash layout and installed bootloader. The bundled tool and
+   matching U-Boot are included in this release's stock image. Run
+   `lt22m-bootloader flash bundled` **explicitly** when ready; it writes only
+   mtd0, verifies the entire 192-KiB readback and does **not** reboot. An
+   interrupted or incompatible bootloader write requires external SPI recovery.
+3. **Without rebooting between the bootloader and firmware writes**, copy the
+   fullflash sysupgrade image to `/tmp` and run:
+
+   ```sh
+   sysupgrade -T -n /tmp/openwrt-ramips-mt76x8-tuoshi_lt22m_fullflash-squashfs-sysupgrade.bin
+   sysupgrade -n /tmp/openwrt-ramips-mt76x8-tuoshi_lt22m_fullflash-squashfs-sysupgrade.bin
+   ```
+
+   The migration guard requires the LT22M OpenWrt SPL-family marker and a
+   CRC-valid second stage, matching physical MTD layout and valid firmware. It
+   refuses configuration-backup migration; `-n` is required for this one-time
+   layout change. The firmware step does not rewrite mtd0, Environment or
+   Factory. After a successful fullflash boot, ordinary fullflash sysupgrades
+   can preserve configuration.
+
+The **exact RC5 factory binary has not yet been tested through the OEM web UI**.
+Its size is within the stock Firmware MTD and its OEM image magic, name and CRC
+have been checked offline, but web-upload acceptance and staging RAM remain
+hardware-dependent. Likewise, the complete RC5 three-step migration has not
+been exercised as a single sequence on a factory-stock device. Treat this as
+a prerelease and do not force an image past a failed device or upgrade check.
+
+Packages and kernel modules in these images are built for this firmware's
+kernel ABI. Public OpenWrt snapshot kernel modules are not interchangeable;
+this source repository is not a hosted binary package feed.
