@@ -8,6 +8,16 @@ LuCI sources and package recipes are vendored in this tagged image feed. See
 SIM PIN, APN, device-specific Factory data, credentials or private keys are
 included in generic images.
 
+## Changes in v1.0.1
+
+- wwand completes the ML352 RNDIS DHCP handshake before reporting the data
+  session as connected, without applying lease addresses, DNS, or routes.
+- netifd reinstalls routes when the L3 device is replaced under the same name
+  with a different kernel interface index.
+- The combined Fullflash release candidate recovered LTE and HTTPS automatically
+  after an upgrade reboot and a separate ML352 USB re-enumeration on hardware.
+  A physical power cycle and stock OEM installation were not tested.
+
 ## Choose the image for your bootloader and flash layout
 
 | Release file | Use |
