@@ -1,10 +1,12 @@
 # OpenWrt for the Tuoshi LT22M
 
-Experimental firmware for the Tuoshi LT22M 4G router. These images include the
-ML352 modem service and LuCI interface, German LuCI translations, and WireGuard.
-They are built together from pinned OpenWrt and package-feed sources; see
-`BUILD_INFO.txt` for the exact commits and `SHA256SUMS` for the downloaded files.
-No device-specific Factory data, credentials or private keys are included.
+OpenWrt firmware for the Tuoshi LT22M 4G router. Version 1.0.0 replaces the
+legacy ML352 modem daemon with wwand's ML352 NCM adapter and LuCI status app;
+it also includes WireGuard. The wwand source is pinned to a tested fork commit;
+LuCI sources and package recipes are vendored in this tagged image feed. See
+`BUILD_INFO.txt` for exact commits and `SHA256SUMS` for image checksums. No
+SIM PIN, APN, device-specific Factory data, credentials or private keys are
+included in generic images.
 
 ## Choose the image for your bootloader and flash layout
 
@@ -51,12 +53,18 @@ second firmware slot and stock B→A fallback are removed. The bootloader
    Factory. After a successful fullflash boot, ordinary fullflash sysupgrades
    can preserve configuration.
 
-The **exact RC5 factory binary has not yet been tested through the OEM web UI**.
-Its size is within the stock Firmware MTD and its OEM image magic, name and CRC
-have been checked offline, but web-upload acceptance and staging RAM remain
-hardware-dependent. Likewise, the complete RC5 three-step migration has not
-been exercised as a single sequence on a factory-stock device. Treat this as
-a prerelease and do not force an image past a failed device or upgrade check.
+The LT22M fullflash image's ML352 wwand adapter was tested on two running
+fullflash routers. On the second, an unset APN obtained native LTE IPv4 and two
+DNS servers; bound IP/hostname traffic and an interface reconnect passed after
+the CGACT read-before-activation fix. SIM PINs belong in the router's preserved
+UCI configuration; this generic image carries none. A forced modem-failure
+recovery sequence has not been tested.
+
+The **v1.0.0 stock factory binary has not been installed through the OEM web UI**.
+Its size and OEM image magic/name/CRC are checked offline, but exact web-upload
+acceptance and staging RAM remain hardware-dependent. The complete
+stock→fullflash three-step migration has not been exercised as one sequence on
+a factory-stock device. Do not force an image past a failed device/upgrade check.
 
 Packages and kernel modules in these images are built for this firmware's
 kernel ABI. Public OpenWrt snapshot kernel modules are not interchangeable;

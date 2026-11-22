@@ -1,9 +1,10 @@
 # Tuoshi LT22M local OpenWrt feed and personal firmware builds
 
-This repository contains the `ml352d` modem service, its LuCI application and the
-`lt22m-modem-ui` metapackage. The LTE registration-recovery fix is in
-`ml352d` 0.1.0-r3. It contains no device-unique flash dumps, passwords, keys,
-or modem credentials. **This source feed is not a hosted APK repository.**
+This repository carries the LT22M firmware profiles and the local wwand/ML352
+integration for v1.0.0. The older `ml352d` daemon and LuCI sources remain here
+for historic images but are excluded from the wwand profiles. The feed contains
+no device-unique flash dumps, passwords, keys or modem credentials. **This
+source feed is not a hosted APK repository.**
 
 ## Downloadable firmware
 
@@ -49,24 +50,61 @@ Use the released firmware rather than forcing upstream kmods onto this image.
 
 ## Build provenance
 
-The Actions workflow uses the immutable fork commits in
-[`profiles/sources.env`](profiles/sources.env), the pinned upstream package and
-LuCI revisions in [`profiles/feeds.conf`](profiles/feeds.conf), and this
-repository's tagged commit for the local feed. Each clean build selects just
+The Actions workflow uses immutable OpenWrt and wwand source commits in
+[`profiles/sources.env`](profiles/sources.env), pinned OpenWrt package/LuCI
+revisions in [`profiles/feeds.conf`](profiles/feeds.conf), and this repository's
+tagged commit for the vendored wwand/LuCI package recipes and LuCI resources. Each clean build selects just
 one device using [`profiles/stock-v1.config`](profiles/stock-v1.config) or
 [`profiles/fullflash-v1.config`](profiles/fullflash-v1.config). The workflow
 checks image magic, CRC, metadata, size, required packages, offline guards,
 and publishes only the three named binaries plus SHA-256 sums and source pins.
 The visible OpenWrt release is the Git tag; its revision is the tag followed by
 the short, pinned OpenWrt source commit (for example
-`v0.1.0-rc1-81cc3e5`). This is set explicitly instead of relying on
-OpenWrt's Git-history counter in a shallow checkout. Manual
-`workflow_dispatch` runs build artifacts without creating a release; a `v*`
-tag publishes a prerelease once both builds pass. RC1 test builds may replace
-the RC1 tag and its assets: always verify the current `SHA256SUMS`.
+`v1.0.0-8424280`). This is set explicitly instead of relying on OpenWrt's
+Git-history counter in a shallow checkout. Manual `workflow_dispatch` runs
+build artifacts without creating a release; a `v*` tag publishes only after
+both images pass verification. `v1.0.0` is a stable GitHub release, whereas
+`*-rc*` tags remain prereleases. Always verify the published `SHA256SUMS`.
 
 A release image is not a bootloader installer or a backup of a physical device.
 The source feed does not replace OpenWrt's standard package feeds.
+
+## wwand/ML352 integration for v1.0.0
+
+The stock and fullflash profiles select the modern wwand
+NCM backend, its LuCI app/protocol and a board-gated `lt22m-wwand` package,
+not `ml352d` or `luci-app-ml352`. Both board IDs get modular JSON `tech`
+LEDs; GPIO1/38 are intentionally not modem power/reset controls. A fresh
+LT22M uses wwand for modem control and its native IPv4 /32 plus NOARP device
+route on the renamed RNDIS link `wwand0`. The ML352 adapter merges DNS from a
+CGCONTRDP response matching the assigned CGPADDR address. The revised
+upstream-dialect fullflash test image was installed on 2026-11-17: native `lte`
+now owns IPv4 and both carrier DNS servers; bound LTE traffic and reconnect
+passed, and the old dynamic DHCP child `lte_4` is absent.
+A known old `lte proto dhcp device eth1` is migrated in place; custom LTE
+configurations are preserved. The internal modem is anchored by USB port `1-1`
+so `eth1`→`wwand0` renaming does not break daemon rediscovery. ML352 reads
+`CGACT?` before repeating PDP activation, avoiding CME on an already active
+bearer. Serving and neighbour cells are read-only raw indices. ML352 AT*CELL
+has no safe readback and no extra selection API is included.
+
+For a reproducible local release build, use the two pinned OpenWrt source
+revisions and feed configuration from `profiles/`, select the appropriate
+`*-v1.config` profile, install this feed's `wwand`, `luci-app-wwand` and
+`luci-proto-wwand` packages, then build and run `scripts/verify_images.py`.
+A separate, older stock-only **development** tree without the
+`lt22m-bootloader` package cannot produce a loader-migration-capable stock
+release image; do not publish its locally checked binaries.
+The release workflow refuses to publish without a pinned ML352 source commit
+and a verified SDK mirror hash. The first fullflash tests on 2026-11-16/17
+proved wwand's native IPv4/DNS but preceded a second-router edge case. On
+2026-11-22 the Segelverein fullflash LT22M was upgraded with preserved LAN,
+WireGuard and SIM configuration; after the stable-USB-path and idempotent-PDP
+fixes, the SIM reached LTE with **no explicit APN**. Native IPv4, two DNS
+servers, bound traffic, interface reconnect and protected-MTD checks passed.
+The SIM PIN was configured only on that router, not embedded in an image.
+Forced modem-failure recovery remains untested. Details, hardware observations and limits are in the local
+wwand worktree's `docs/lt22m-ml352.md`.
 
 ## ML352 data connection (0.1.0-r7)
 
@@ -96,6 +134,15 @@ not authorize a radio reset. Leave this option empty for private APNs unless
 you have a reachable, operator-controlled endpoint; a blocked ping target
 otherwise causes unnecessary rebinds. The rebind policy has offline tests;
 a controlled hardware failure/recovery test remains outstanding.
+
+## ML352 runtime APN display
+
+The status view reads CID 1 from the modem's `AT+CGDCONT?` response through
+`ml352d` rather than displaying the UCI setting. An empty but valid modem APN
+is shown as "No APN configured in modem"; missing or malformed replies are
+unknown (`—`). A network-selected default APN cannot be inferred from an
+empty modem context. The configured UCI APN remains available in the settings
+page and controls modem configuration, but is not substituted for telemetry.
 
 ## ML352 band display
 

@@ -1,0 +1,714 @@
+# OpenWrt package definitions for the wwand connection manager.
+# One source package (git: ddimension/wwand); the ucode side is split into a
+# backend-neutral base plus per-backend packages so an install carries only the
+# control protocols it needs:
+#   wwand            - daemon + shared core + codec/client + native wwand_io.so
+#                      transport module (no backend on its own)
+#   wwand-qmi        - QMI backend            (DEPENDS wwand)
+#   wwand-mbim       - MBIM backend           (DEPENDS wwand-qmi: the MBIM
+#                                              QMI-over-MBIM passthrough reuses
+#                                              qmi_backend)
+#   wwand-ncm        - NCM/ECM backend        (DEPENDS wwand)
+#   wwand-mhi        - PCIe/MHI transport + drivers (DEPENDS wwand; add a backend)
+#   wwand-esim       - eSIM management        (DEPENDS wwand + lpac; no backend)
+#   wwand-gps        - GNSS/NMEA reader (DEPENDS wwand; no backend)
+# A typical QMI router installs `wwand-qmi` (which pulls in `wwand`); add
+# `wwand-mbim` / `wwand-ncm` for those modems, `wwand-mhi` for a PCIe/MHI modem.
+# The ucode tree ships PRECOMPILED to bytecode (repo-root CMakeLists.txt,
+# alongside wwand_io.so). `CONFIG_WWAND_UCODE_SOURCE` opts out and ships the
+# readable sources instead — the same polarity the wwand repo's CMakeLists.txt
+# and files/wwand.init already assume.
+#
+# The polarity matters beyond taste. It used to be an opt-in
+# (WWAND_UCODE_PRECOMPILE, default n), which meant the desired outcome depended
+# on a symbol SURVIVING defconfig — and in a per-package SDK build it does not:
+# defconfig dropped it together with the CONFIG_PACKAGE_wwand it depends on, and
+# the build then shipped source while reporting success. As an opt-out, a
+# dropped symbol lands on the default we want, so the failure mode is gone.
+#
+# KNOWN COUPLING, accepted deliberately: bytecode carries a format version
+# (UCODE_BYTECODE_VERSION, ucode's include/ucode/vm.h) that an interpreter
+# upgraded past it refuses to load, and no package relation can express that —
+# it is independent of libucode's PKG_ABI_VERSION/SONAME, so an ABI-versioned
+# dependency does not capture it either. Upgrading ucode alone can therefore
+# leave the daemon unable to start. That is not silent: files/wwand.init
+# recognises "Bytecode version mismatch" / "Invalid file magic" and refuses with
+# an explanatory line instead of respawning forever. The remedy is to reinstall
+# wwand built against the running ucode, or to build with
+# CONFIG_WWAND_UCODE_SOURCE.
+#
+# NOTE: the split needs the ucode source that lazy-loads every backend
+# (qmi_lazy.uc + the backend-neutral daemon), i.e. a wwand commit that
+# includes them.
+#
+# Version: PKG_VERSION is the wwand release the pinned commit belongs to —
+# X.Y.Z for the tag vX.Y.Z (what stable ships), X.Y.Z_pN for N commits after
+# it (main). Do not bump by hand: `scripts/bump-source.sh wwand <tag|commit>`
+# sets PKG_SOURCE_VERSION, PKG_VERSION, PKG_RELEASE and PKG_MIRROR_HASH
+# together.
+
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=wwand
+PKG_VERSION:=1.10.0_pre6
+PKG_RELEASE:=1
+
+PKG_SOURCE_PROTO:=git
+PKG_SOURCE_URL:=https://github.com/micw/wwand.git
+PKG_SOURCE_VERSION:=610fa6e72b0181adda2fec4e7b71d4c468f3414c
+PKG_MIRROR_HASH:=c8338a24cb61b5ed30d51bd1be402c602ece087f4946884cb32e67351835d21c
+
+PKG_LICENSE:=GPL-2.0-only
+PKG_MAINTAINER:=
+
+# host ucode is the bytecode compiler, and it is now needed on the DEFAULT path,
+# so the dependency is unconditional. It was `WWAND_UCODE_PRECOMPILE:ucode/host`
+# — a conditional that could only ever be as reliable as the symbol behind it,
+# and when the symbol went missing the compiler went with it and cmake fell back
+# to shipping source. A build that opts out with CONFIG_WWAND_UCODE_SOURCE pays
+# for a host ucode it does not use; that is the cheaper mistake by far.
+PKG_BUILD_DEPENDS:=ucode/host
+
+include $(INCLUDE_DIR)/package.mk
+include $(INCLUDE_DIR)/cmake.mk
+
+# One cmake build (repo-root CMakeLists.txt) produces both the native
+# wwand_io.so (io/ subdir) and — by default — the ucode tree compiled to
+# bytecode, one compiler invocation per file with explicit source lists (the
+# whole mechanism, incl. the invariants it enforces, is documented in the
+# wwand repo's CMakeLists.txt). The bytecode compiler is the SDK's host ucode
+# (PKG_BUILD_DEPENDS:=ucode/host) — same ucode revision as the target runtime,
+# which bytecode is locked to.
+CMAKE_BINARY_SUBDIR:=build
+
+CMAKE_OPTIONS += \
+	-DUCODE_COMPILER=$(STAGING_DIR_HOSTPKG)/bin/ucode \
+	-DUCODE_PRECOMPILE=$(if $(CONFIG_WWAND_UCODE_SOURCE),OFF,ON)
+
+# every install section takes the ucode tree from here: the cmake bytecode
+# output, or the plain sources when CONFIG_WWAND_UCODE_SOURCE opts out.
+WWAND_UCODE=$(if $(CONFIG_WWAND_UCODE_SOURCE),$(PKG_BUILD_DIR)/src-ucode,$(CMAKE_BINARY_DIR)/ucode/wwand)
+
+UCDIR:=/usr/share/ucode/wwand
+
+# Base-package ucode set, listed explicitly per install dir. No glob-then-`rm`:
+# every module is owned by exactly one package, so a new backend file can never
+# silently ship in the base too. The per-backend install lists below carry the
+# QMI/MBIM/NCM/eSIM modules; main.uc/wwandctl.uc install as executables.
+WWAND_BASE_UC:=apndb.uc atcmd.uc atcmd_parse.uc atport.uc backend.uc board.uc \
+	carrier_config.uc cell_lock.uc client.uc config.uc config_check.uc context_common.uc \
+	fcc_fibocom.uc \
+	context_monitor_qmi.uc ctx_settings.uc daemon.uc deps.uc discovery.uc \
+	hwops.uc log.uc modem_common.uc modem_datapath_qmi.uc modem_init_qmi.uc plugins.uc \
+	modem_quirks.uc modeswitch.uc ncm_vendors.uc netlink.uc netsel_ops.uc \
+	protocol_switch.uc reconnect.uc recovery.uc regdetail.uc sim.uc sim_plmn.uc \
+	simops.uc siminventory.uc sms.uc sms_pdu.uc telemetry_mbim.uc telemetry_ncm.uc \
+	telemetry_qmi.uc transport.uc ubus.uc version.uc wwandctl_fmt.uc
+WWAND_BASE_CODEC:=arfcn_bands.uc hex.uc qmux.uc tlv.uc
+WWAND_BASE_SCHEMA:=cat.uc ctl.uc dms.uc dsd.uc loc.uc merge.uc nas.uc pdc.uc rat.uc \
+	tmd.uc uim.uc wda.uc wds.uc wms.uc wms_lazy.uc
+
+# DEVELOPERS: set CONFIG_WWAND_UCODE_SOURCE to ship readable .uc source
+# instead of bytecode — for editing modules live under /usr/share/ucode/wwand
+# and for source-line tracebacks; bytecode tracebacks report offsets only.
+PKG_CONFIG_DEPENDS:=CONFIG_WWAND_UCODE_SOURCE
+
+define Package/wwand/config
+config WWAND_UCODE_SOURCE
+	bool "Ship the ucode tree as source instead of bytecode"
+	depends on PACKAGE_wwand
+	default n
+	help
+	  By default the ucode tree is compiled to bytecode, so the daemon
+	  starts without a parse step (measured 41 ms -> 5 ms for the core
+	  imports on x86; more on a router CPU). Enable this to ship the
+	  readable sources instead: modules can then be edited in place
+	  under /usr/share/ucode/wwand and tracebacks name source lines
+	  rather than bytecode offsets.
+
+	  Note that bytecode carries a format version that an interpreter
+	  upgraded past it refuses to load, and nothing in the package
+	  metadata can express that dependency — so upgrading ucode alone
+	  can leave the daemon unable to start. The init script detects
+	  exactly that case and refuses with an explanatory log line rather
+	  than respawning forever; the remedy is to reinstall wwand built
+	  against the running ucode, or to enable this option.
+
+	  A build whose host ucode cannot emit bytecode does not fail: the
+	  cmake capability probe falls back to shipping source on its own.
+endef
+
+# ---------------------------------------------------------------------------
+# base: daemon + framework + codec/client + shared core. No backend on its own;
+# the daemon loads whichever wwand-qmi/-mbim/-ncm package is present.
+# ---------------------------------------------------------------------------
+define Package/wwand
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=Event-driven cellular connection manager (backend-neutral core)
+  DEPENDS:=+ucode +ucode-mod-fs +ucode-mod-struct +ucode-mod-uloop \
+	+ucode-mod-ubus +ucode-mod-uci +ucode-mod-rtnl
+  # the native wwand_io transport module ships inside this package (it is
+  # wwand-private, always version-locked to the ucode side). PROVIDES keeps
+  # configs/upgrades from the era of the separate ucode-mod-wwand-io working.
+  PROVIDES:=ucode-mod-wwand-io
+endef
+
+define Package/wwand/description
+  wwand is an event-driven connection manager daemon for cellular modems,
+  supporting multiple modems and multiple parallel PDP contexts. This base
+  package carries the daemon, the netifd proto shim, the QMI codec (qmux/tlv +
+  service schemas), the generic service client, the SIM/APDU layer and the
+  shared modem/context core. Install a backend package (wwand-qmi, wwand-mbim
+  or wwand-ncm) for the control protocols your modems use.
+endef
+
+# THE rc.d SYMLINK CARRIES THE STOP ORDER, NOT THE SCRIPT.
+#
+# `/etc/rc.d/K<n>wwand` is created once, by `enable`, from the STOP= that the
+# init script had AT THAT MOMENT. Shipping a new script with a different STOP
+# changes nothing on a box where the service is already enabled — the old
+# symlink stays and the old order stays with it.
+#
+# That made the ddimension/wwand#36 fix inert exactly where it was needed.
+# wwand moved to STOP=84 to be torn down one step BEFORE odhcpd, so it can
+# still tell the LAN the prefix is going while there is somebody to tell. On
+# an upgraded box the symlink was still K85wwand, which sorts AFTER K85odhcpd
+# (same number, alphabetical) — odhcpd died first and the announcement went
+# nowhere. Measured on three of our own routers, 2026-09-22: every one of them
+# had the fix installed and none of them had it in effect.
+#
+# `enable` alone would already fix the ORDER — it creates K84, which sorts before
+# K85odhcpd, so the withdrawal does go out. What it does not do is clean up: it
+# only ever `ln -sf`s the current names (rc.common:44-54) and leaves K85 and S25
+# standing, so the box then stops wwand twice (the second time after odhcpd, where
+# it does nothing) and starts it twice. `disable` removes S??/K?? with any number
+# (rc.common:38-42), so disable-then-enable is what leaves rc.d as the package
+# means it.
+#
+# AND THE TEST IS NOT `enabled`. That helper wants S<START> AND K<STOP> to exist
+# with the values the CURRENT script carries (rc.common:56-64) — which is exactly
+# what an upgraded box does not have, so asking it here skips the very case this
+# exists for. Verified on hardware, 2026-09-22: with S25/K85 in place and the
+# script saying 19/84, `enabled` answers no. The question that CAN be answered is
+# "is there a start symlink at all", which is true for a service the operator left
+# on, whatever numbers it carries, and false for one they switched off.
+#
+# The rollback is not decoration. `disable` unlinks before `enable` relinks, and
+# a read-only or full overlay between the two leaves the box with NO start link,
+# which is worse than the stale order we came to fix. So the old names are
+# remembered first and put back if the re-registration did not take.
+#
+# WHAT IS CHECKED IS THE RESULT, NOT THE EXIT STATUS. `enable` sets err=0 as
+# soon as EITHER link is created (rc.common:44-54), so an S19 that succeeds and
+# a K84 that fails reports success — and the K link `disable` had just removed
+# would be gone with the rollback never running. `enabled` (rc.common:56-64) is
+# the opposite: it demands both, with the values the current script carries.
+# That makes it useless as the precondition here — on the very boxes this
+# exists for it answers no — and exactly right as the postcondition. Raised by
+# Codex review, 2026-09-23.
+#
+# Note this re-enables from the init script that is ACTUALLY installed. apk keeps
+# an operator-modified /etc/init.d/wwand and drops ours beside it as .apk-new
+# (reproduced 2026-09-22), so on such a box the links follow the modified script's
+# own START/STOP. That is the right way round — we do not overrule an edit — but
+# it means the new order arrives only once that edit is reconciled.
+define Package/wwand/postinst
+#!/bin/sh
+[ -n "$${IPKG_INSTROOT}" ] && exit 0
+
+old=
+start=
+for l in /etc/rc.d/S??wwand /etc/rc.d/K??wwand; do
+	[ -L "$$l" ] || continue
+	old="$$old $$l"
+	case "$$l" in /etc/rc.d/S*) start=1 ;; esac
+done
+
+if [ -x /etc/init.d/wwand ] && [ -n "$$start" ]; then
+	/etc/init.d/wwand disable
+	/etc/init.d/wwand enable
+	/etc/init.d/wwand enabled || {
+		# put back WHAT WAS THERE, which means removing what the half-done
+		# enable left as well: restoring the old names on top of a stray new
+		# one produces a third state nobody chose, and a service that starts
+		# twice at boot is not the state we promised to preserve.
+		for l in /etc/rc.d/S??wwand /etc/rc.d/K??wwand; do
+			[ -L "$$l" ] || continue
+			case " $$old " in *" $$l "*) continue ;; esac
+			rm -f "$$l"
+		done
+		for l in $$old; do ln -sf ../init.d/wwand "$$l"; done
+	}
+fi
+
+exit 0
+endef
+
+define Package/wwand/install
+	# native transport module (built by the cmake step from io/)
+	$(INSTALL_DIR) $(1)/usr/lib/ucode
+	$(INSTALL_BIN) $(CMAKE_BINARY_DIR)/io/wwand_io.so $(1)/usr/lib/ucode/
+	# base ucode tree — explicit per-file lists (see WWAND_BASE_* above), so the
+	# base package owns exactly its own modules and nothing a backend ships.
+	$(INSTALL_DIR) $(1)$(UCDIR)/codec/schema
+	$(INSTALL_DATA) $(addprefix $(WWAND_UCODE)/,$(WWAND_BASE_UC)) $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(addprefix $(WWAND_UCODE)/codec/,$(WWAND_BASE_CODEC)) $(1)$(UCDIR)/codec/
+	$(INSTALL_DATA) $(addprefix $(WWAND_UCODE)/codec/schema/,$(WWAND_BASE_SCHEMA)) $(1)$(UCDIR)/codec/schema/
+	# daemon + CLI as executables (not under $(UCDIR))
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(WWAND_UCODE)/main.uc $(1)/usr/sbin/wwand
+	# wwandctl: the human-friendly CLI front-end over the ubus API
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(WWAND_UCODE)/wwandctl.uc $(1)/usr/bin/wwandctl
+	$(INSTALL_DIR) $(1)/lib/netifd/proto
+	# the shim registers `wwand` and nothing else — netifd sources every handler
+	# in this directory, so two of them claiming `qmi` would be settled by load
+	# order. `proto qmi` therefore stays uqmi's qmi.sh; migrating an interface is
+	# the user's explicit act.
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/wwand-proto.sh $(1)/lib/netifd/proto/wwand.sh
+	$(INSTALL_DIR) $(1)/usr/libexec/wwand
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/wwand-migrate $(1)/usr/libexec/wwand/migrate
+	# migration is user-triggered (LuCI modem list / the migrate CLI); the
+	# Config migration is ALWAYS user-triggered: nothing is installed under
+	# /etc/uci-defaults, so installing or upgrading wwand never rewrites an
+	# existing configuration. The example below is shipped inert; copying it
+	# into /etc/uci-defaults/ runs the same migration once, at the next boot.
+	$(INSTALL_DIR) $(1)/usr/share/wwand/examples
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/examples/99-wwand-migrate \
+		$(1)/usr/share/wwand/examples/99-wwand-migrate
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/wwand.init $(1)/etc/init.d/wwand
+	# no /etc/config/wwand for new installs — all config lives in
+	# /etc/config/network now (existing files survive upgrade and are still read).
+	# files/wwand.config is kept in the source tree only as a documented example.
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/usbmisc
+	$(INSTALL_DIR) $(1)/usr/share/acl.d
+	# ubus ACL: lets an unprivileged reader (collectd's exec plugin refuses to
+	# run as root) fetch telemetry. Deliberately NOT `status` — that carries
+	# iccid/imsi/imei/msisdn and a ubus ACL cannot filter a result.
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/wwand-acl.json $(1)/usr/share/acl.d/wwand.json
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/wwand.hotplug $(1)/etc/hotplug.d/usbmisc/20-wwand
+	# net hotplug: NCM modems (no cdc-wdm) + re-enumeration after a mode switch
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/net
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/wwand.hotplug.net $(1)/etc/hotplug.d/net/20-wwand
+	# tty hotplug: AT ports appearing after the datapath netdev (vendor-serial
+	# new_id bind / late kmodloader) re-kick a modem parked in no_at_port backoff
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/tty
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/wwand.hotplug.tty $(1)/etc/hotplug.d/tty/20-wwand
+	# usb hotplug: bind qmi_wwan to the Huawei E182E's ethernet function. The
+	# kernel hands the device to qmi_wwan (cdc_ether blacklists it) but its
+	# table entry wants a vendor-specific class this old 802.3 layout does not
+	# carry, so a scoped dynamic new_id is what makes the control channel appear
+	# at all — and it is volatile, so it has to be re-created on every replug.
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/usb
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/wwand.hotplug.e182e $(1)/etc/hotplug.d/usb/21-wwand-e182e
+	# NOTE: the kernel-wwan-subsystem hotplug (/etc/hotplug.d/wwan/20-wwand) is
+	# NOT installed here — it belongs to wwand-mhi, which also pulls the MHI
+	# drivers that create /sys/class/wwan in the first place (procd only arms a
+	# subsystem whose hotplug dir exists). USB modems never need it.
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-qmi: the QMI backend (native qmux over /dev/cdc-wdmX).
+# ---------------------------------------------------------------------------
+define Package/wwand-qmi
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=QMI backend for wwand
+  # kmod-rmnet is the QMAP demuxer and is needed on BOTH transports (an MHI
+  # modem multiplexes through it too); only the USB glue is conditional, so a
+  # target built without USB support can still select this backend and drive a
+  # PCIe/MHI modem. On a USB target nothing changes.
+  DEPENDS:=+wwand +USB_SUPPORT:kmod-usb-net-qmi-wwan +kmod-rmnet
+  # coexists with the stock OpenWrt QMI stack (uqmi): wwand claims only
+  # `proto wwand` interfaces, so both can be installed. To hand an existing
+  # `proto qmi` interface to wwand, migrate it — from the LuCI modem list or
+  # with `/usr/libexec/wwand/migrate --apply` — which rewrites it in place.
+endef
+
+define Package/wwand-qmi/description
+  QMI control backend for wwand: talks QMI natively over /dev/cdc-wdmX (qmi_wwan
+  driver) with QMAP multiplexing (rmnet), without spawning uqmi/qmicli. This is
+  the common case for most cellular routers. Pair with wwand-mhi for modems
+  attached over PCIe/MHI.
+endef
+
+define Package/wwand-qmi/install
+	$(INSTALL_DIR) $(1)$(UCDIR)
+	$(INSTALL_DATA) $(WWAND_UCODE)/modem.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/context.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/qmi_backend.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/callend.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/qmi_lazy.uc $(1)$(UCDIR)/
+	# modem.uc imports it at load time, so it ships beside it: without it
+	# every QMI modem fails to load, QRTR or not
+	$(INSTALL_DATA) $(WWAND_UCODE)/qmi_over_qrtr.uc $(1)$(UCDIR)/
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-mbim: the MBIM backend. Depends on wwand-qmi because the QMI-over-MBIM
+# passthrough runs the QMI stack (qmi_backend) over the open MBIM channel.
+# ---------------------------------------------------------------------------
+define Package/wwand-mbim
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=MBIM backend for wwand
+  # conditional for the same reason as wwand-qmi: the ucode side is
+  # transport-neutral, and on MHI the transport is kmod-mhi-wwan-mbim, which
+  # wwand-mhi already pulls
+  DEPENDS:=+wwand-qmi +USB_SUPPORT:kmod-usb-net-cdc-mbim
+  # coexists with the stock OpenWrt MBIM stack (netifd `mbim` proto, package
+  # umbim): wwand manages a cdc_mbim modem only once its interface has been
+  # migrated to `proto wwand` (LuCI modem list / migrate CLI), so both stacks can
+  # be installed side by side.
+endef
+
+define Package/wwand-mbim/description
+  MBIM control backend for wwand (cdc_mbim driver): native MS Basic Connect (+
+  Extensions v2/v3) plus a QMI-over-MBIM passthrough that tunnels the whole QMI
+  stack over the open MBIM channel for full CDC-level telemetry/config. The
+  passthrough reuses qmi_backend, hence the dependency on wwand-qmi. Pair
+  with wwand-mhi for modems attached over PCIe/MHI.
+endef
+
+define Package/wwand-mbim/install
+	$(INSTALL_DIR) $(1)$(UCDIR)/codec/mbim_schema
+	$(INSTALL_DATA) $(WWAND_UCODE)/modem_mbim.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/context_mbim.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/mbim_backend.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/mbim_client.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/qmi_over_mbim.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/mbim_lazy.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/atcmd_mbim.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/atcmd_mbim_lazy.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/codec/mbim.uc $(1)$(UCDIR)/codec/
+	$(INSTALL_DATA) $(WWAND_UCODE)/codec/mbim_schema/*.uc $(1)$(UCDIR)/codec/mbim_schema/
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-ncm: the NCM/ECM backend (cdc_ncm / cdc_ether, AT-controlled).
+# ---------------------------------------------------------------------------
+define Package/wwand-ncm
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=NCM/ECM backend for wwand
+  # +kmod-usb-net-rndis: the RNDIS datapath (rndis_host) used by e.g. the
+  # Fibocom FM350-GL (MediaTek T700) — same AT-driven backend, RNDIS netdev.
+  # These three stay UNCONDITIONAL, unlike the USB kmods of wwand-qmi and
+  # wwand-mbim. Those two have a non-USB transport behind them — QMI keeps
+  # +kmod-rmnet unconditional and reaches a modem over MHI, MBIM gets
+  # kmod-mhi-wwan-mbim through wwand-mhi — so gating their USB kmod still
+  # leaves a package that works on a PCIe-only target. NCM has no such path:
+  # it drives a single cdc_ncm/cdc_ether netdev and the only variant it
+  # recognises is rndis_host, all USB. Gating these on USB_SUPPORT would leave
+  # the package selectable on a !USB_SUPPORT target while pulling no datapath
+  # driver at all — installable and inert. The hard dependency is what keeps it
+  # unselectable there. (Raised in review on openwrt/packages#30185.)
+  DEPENDS:=+wwand +kmod-usb-net-cdc-ncm +kmod-usb-net-cdc-ether \
+	+kmod-usb-net-rndis
+  # coexists with the stock OpenWrt NCM stack (netifd `ncm` proto, package
+  # comgt-ncm): wwand drives an AT/NCM modem only once its interface has been
+  # migrated to `proto wwand` (LuCI modem list / migrate CLI), so both stacks can
+  # be installed side by side.
+endef
+
+define Package/wwand-ncm/description
+  NCM/ECM control backend for wwand: an AT-controlled datapath over a plain
+  cdc_ncm / cdc_ether netdev, for modems that expose no cdc-wdm control device.
+endef
+
+define Package/wwand-ncm/install
+	$(INSTALL_DIR) $(1)$(UCDIR)
+	$(INSTALL_DATA) $(WWAND_UCODE)/modem_ncm.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/context_ncm.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/ncm_lazy.uc $(1)$(UCDIR)/
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-mhi: PCIe/MHI transport bundle. Modems on the kernel `wwan` subsystem
+# (Foxconn T99W175/SDX, Quectel RM5xx-AE, Telit FN990, …) expose their QMI/MBIM
+# control port under /sys/class/wwan — not usbmisc/cdc-wdm — and need the MHI
+# driver stack instead of the USB kmods. This package pulls those drivers and
+# ships the wwan-subsystem hotplug that binds such a modem on cold-plug. It is
+# transport-only and backend-neutral: install ALONGSIDE wwand-qmi (QMI over MHI,
+# rmnet data) or wwand-mbim (MBIM over MHI) for the control protocol.
+# ---------------------------------------------------------------------------
+define Package/wwand-mhi
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=PCIe/MHI transport + drivers for wwand
+  DEPENDS:=+wwand +kmod-mhi-pci-generic +kmod-mhi-wwan-ctrl \
+	+kmod-mhi-wwan-mbim +kmod-mhi-net
+endef
+
+define Package/wwand-mhi/description
+  Support for cellular modems attached over PCIe/MHI (Foxconn T99W175 and
+  similar), whose control ports appear on the kernel wwan subsystem. Pulls the
+  MHI bus/PCI/control/data drivers and installs the wwan-subsystem hotplug so
+  wwand binds these modems on boot. Install together with a control backend
+  (wwand-qmi or wwand-mbim).
+
+  Adding wwand-mbim is worth weighing on a QMI-driven MHI modem: many of them
+  expose no DUN channel and therefore no AT port at all, and wwand can then
+  carry AT over the modem's MBIM channel instead (Quectel QDU). The cost is
+  that wwand-mbim currently pulls the USB MBIM transport with it, which this
+  path does not use — and on a target built without USB support it cannot be
+  selected at all. Without it the capability is simply absent: vendor AT
+  commands, the protocol switch and AT telemetry are unavailable, which is a
+  limitation rather than a failure.
+endef
+
+define Package/wwand-mhi/install
+	# wwan-subsystem hotplug: MHI modems expose their control port under
+	# /sys/class/wwan (/dev/wwanXqmiN|mbimN). procd only dispatches the `wwan`
+	# subsystem once this directory exists — so it ships with the MHI drivers,
+	# not with the base package.
+	$(INSTALL_DIR) $(1)/etc/hotplug.d/wwan
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/files/wwand.hotplug.wwan $(1)/etc/hotplug.d/wwan/20-wwand
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-esim: eSIM (eUICC) profile management. Backend-neutral — the APDU
+# ladder (MBIM UICC -> QMI UIM -> AT) lives in the base package's sim.uc.
+# ---------------------------------------------------------------------------
+define Package/wwand-esim
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=eSIM (eUICC) profile management for wwand
+  # Needs an lpac binary at /usr/bin/lpac: either the generic openwrt-packages
+  # lpac, or our self-contained static wwand-lpac (bundled wolfSSL+libcurl, no
+  # OpenSSL/mbedtls .so — it PROVIDES lpac, so it satisfies +lpac too). lpac
+  # drives the SM-DP+ download/notification (ES9+ HTTPS on the router); the
+  # daemon bridges its stdio APDU protocol inline.
+  #
+  # NO BACKEND DEPENDENCY. This carried +wwand-qmi from the days when the QMI
+  # UIM logical channel was the only APDU transport. It is not any more: sim.uc
+  # probes native MBIM UICC -> QMI UIM -> AT (CCHO/CGLA), and all three live in
+  # the base package, so an NCM-only or MBIM-only box can manage profiles with
+  # no QMI backend installed at all. The stale dependency was not free — it made
+  # wwand-esim uninstallable wherever wwand-qmi's kmods do not exist as
+  # packages, e.g. a build whose QMI drivers are compiled in
+  # (ddimension/wwand#26). tools/check-packaging.py now fails on a DEPENDS that
+  # nothing imports, so the next one cannot sit unnoticed.
+  DEPENDS:=+wwand +lpac
+endef
+
+define Package/wwand-esim/description
+ Optional ES10c (SGP.22) profile management for wwand: EID, profile list,
+ enable/disable/delete over the modem UIM APDU channel. SM-DP+ profile
+ downloads and notification acknowledgements are driven by lpac: its ES10
+ APDUs are relayed through wwand's own APDU channel (ubus modem_apdu) by the
+ stdio bridge, so wwand stays the sole owner of the modem — no separate AT
+ port. lpac runs the ES9+ HTTPS on the router; no dedicated modem APN is
+ required.
+
+ The download is handled by an lpac binary (the +lpac dependency): either the
+ generic openwrt-packages lpac, or the self-contained wwand-lpac (which PROVIDES
+ lpac) — a single ~0.9 MB binary with a minimal static wolfSSL + libcurl linked
+ in, needing no libcurl/libssl/libcrypto .so (vs the ~6.4 MB stock libcurl+
+ OpenSSL pulls in) and carrying the GSMA-capable TLS itself. Either works via
+ /usr/bin/lpac; the stdio APDU bridge needs lpac >= 2.3.0 (upstream PR #399).
+ See wwand-lpac/Makefile.
+endef
+
+define Package/wwand-esim/install
+	$(INSTALL_DIR) $(1)$(UCDIR)
+	$(INSTALL_DATA) $(WWAND_UCODE)/esim.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/esim_bridge.uc $(1)$(UCDIR)/
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-gps: read NMEA off the modem's NMEA port. Backend-neutral — finding the
+# port and starting the receiver are both in the base package, and neither
+# depends on the control protocol.
+# ---------------------------------------------------------------------------
+define Package/wwand-gps
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=GNSS/NMEA reader for wwand
+  # Reads NMEA off the modem's own port and reports it through wwand's ubus.
+  # It used to drive ugps (OpenWrt base) instead, and no longer depends on it:
+  # ugps takes ONE static tty out of /etc/config/gps and publishes ONE `gps`
+  # object, so a two-modem box could only ever have one position; it exits on
+  # tty EOF, which on a modem reset means respawning against a device that is
+  # not back; and it parses neither GSV (satellites in view) nor GSA (fix type,
+  # PDOP/VDOP) and drops every talker but $GP/$GN. wwand already finds the
+  # port, starts the receiver and owns the lifecycle, so the reading is the
+  # small part. Installing ugps alongside is harmless — wwand does not touch
+  # /etc/config/gps and does not claim the `gps` ubus name.
+  DEPENDS:=+wwand
+endef
+
+define Package/wwand-gps/description
+ wwand finds the modem's NMEA port during enumeration (reported as `gps_port`)
+ and `option gnss` starts the receiver with the vendor AT command — QMI's LOC
+ service is broken on Quectel and AT is what works, and only wwand has the
+ port. This package reads that port: NMEA 0183 framing, checksums, RMC/GGA/GSA/
+ GSV/GLL/VTG/ZDA from ANY talker, reported through `modem_gps` as numbers, with
+ the satellites in view and their SNR, the fix type and the DOP values.
+
+ ONE READER PER MODEM, so a two-modem router has two positions. `option
+ gnss_set_time` hands the receiver's clock to wwand's own set_clock, which only
+ ever steps a clock that is plainly unset and so never fights sysntpd.
+
+ Good citizen: it writes no config at all and does not claim the `gps` ubus
+ name, so ugps and an operator's own receiver are unaffected by installing it.
+ One port is only ever read once — a second modem naming a tty that is already
+ being read is refused rather than given half a stream.
+endef
+
+define Package/wwand-gps/install
+	$(INSTALL_DIR) $(1)$(UCDIR)
+	$(INSTALL_DATA) $(WWAND_UCODE)/gps.uc $(1)$(UCDIR)/
+	$(INSTALL_DATA) $(WWAND_UCODE)/nmea.uc $(1)$(UCDIR)/
+endef
+
+# ---------------------------------------------------------------------------
+# wwand-datapath-rmnet_nss: Qualcomm NSS offload behind the VENDOR qmi_wwan_q.
+# A datapath add-on, not a control backend — it plugs into wwand's datapath
+# interface (`option mux 'rmnet_nss'`, or picked up on its own under 'auto').
+# Underscore in the name on purpose: the datapath name doubles as the ucode
+# module name (wwand.datapath_rmnet_nss), and the daemon's "package not
+# installed" note is built from it, so the two must read alike.
+# ---------------------------------------------------------------------------
+define Package/wwand-datapath-rmnet_nss
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=NSS-offloaded QMAP datapath (vendor qmi_wwan_q) for wwand
+  # +wwand-qmi: it is a QMI datapath. The vendor driver and the NSS shim are
+  # NOT dependencies — they come from the board's own kernel tree (QSDK/NSS
+  # builds), and this package must stay installable next to them rather than
+  # try to name them.
+  DEPENDS:=+wwand-qmi
+endef
+
+define Package/wwand-datapath-rmnet_nss/description
+  Datapath add-on for Qualcomm NSS builds (ipq807x and friends), where the modem
+  datapath is offloaded to the NSS cores. The attach point is a global callback
+  contract: rmnet_nss publishes rmnet_nss_callbacks and the vendor qmi_wwan_q
+  driver calls nss_create() on each QMAP netdev it registers. Mainline rmnet
+  makes no such call, so wwand's built-in rmnet/qmimux datapaths produce children
+  that never reach the NSS shim — traffic forwards, but on the CPU.
+
+  This datapath therefore creates nothing: qmi_wwan_q registers the children in
+  its USB probe, one per its qmap_mode module parameter, and wwand adopts them,
+  drives the per-channel link_state gate and binds each WDS session to the QMAP
+  id the driver expects (0x81 upwards, not the config channel number).
+
+  It claims any parent carrying those vendor children, with or without the NSS
+  shim: they need adopting either way, and leaving a non-NSS vendor box to
+  mainline rmnet makes it build a second set of children on a parent that
+  already demuxes QMAP itself. For the offload, rmnet_nss must be LOADED BEFORE
+  the modem's driver binds — qmi_wwan_q captures whether NSS is available at the
+  moment it creates each child, so a module loaded afterwards leaves them
+  without an NSS context; that case is logged and shown on the status page.
+
+  That constraint belongs to the STOCK driver, not to NSS itself: the single
+  nss_create() attempt can be turned into a bounded delayed-work retry, and the
+  child then attaches whenever the NSS data plane comes up, in any order. If you
+  build the vendor driver yourself, kuncy7/aw1000-nss-builder carries such a
+  patch (package-patches/quectel-qmi-wwan/950-rmnet-nss-deferred-attach.patch).
+  It is a change to the quectel-qmi-wwan kernel module, not to wwand, so nothing
+  here can apply it for you — but it removes the ordering requirement at its
+  source rather than working around it.
+
+  Install it on a box with the vendor qmi_wwan_q driver; anywhere else it probes
+  false and changes nothing.
+endef
+
+define Package/wwand-datapath-rmnet_nss/install
+	$(INSTALL_DIR) $(1)$(UCDIR)
+	$(INSTALL_DATA) $(WWAND_UCODE)/datapath_rmnet_nss.uc $(1)$(UCDIR)/
+endef
+
+define Package/wwand-apntest
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=Scheduled end-to-end APN tests for wwand
+  # Test orchestration only: it drives the daemon over ubus and knows nothing
+  # about QMI or MBIM, so it works on every backend. A plan that selects an
+  # eUICC profile additionally needs wwand-esim at RUNTIME — that is reported
+  # as a plan error rather than pulled in here, because most plans only switch
+  # physical slots and should not drag lpac onto the box for nothing.
+  DEPENDS:=+wwand
+endef
+
+define Package/wwand-apntest/description
+Runs the configured APN tests in sequence on a dedicated test box: selects the
+SIM (physical slot), dials each APN through wwand and netifd, checks the address
+pool and resolvers, pings, and reports one verdict per check to an NSCA monitor
+(send_nsca, when `monitor` is configured). Tests are grouped by SIM so each slot
+switch happens once per run. Scheduled from cron (globals.schedule).
+endef
+
+define Package/wwand-apntest/conffiles
+/etc/config/apntest
+endef
+
+define Package/wwand-apntest/install
+	$(INSTALL_DIR) $(1)$(UCDIR)/apntest
+	$(INSTALL_DATA) $(WWAND_UCODE)/apntest/plan.uc $(1)$(UCDIR)/apntest/
+	$(INSTALL_DATA) $(WWAND_UCODE)/apntest/runner.uc $(1)$(UCDIR)/apntest/
+	$(INSTALL_DIR) $(1)/usr/sbin
+	$(INSTALL_BIN) $(WWAND_UCODE)/apntest_cli.uc $(1)/usr/sbin/wwand-apntest
+	# no daemon: the init script only keeps the cron line of the plan's
+	# schedule in root's crontab (start, reload_config, stop)
+	$(INSTALL_DIR) $(1)/etc/init.d
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/files/wwand-apntest.init $(1)/etc/init.d/wwand-apntest
+	# empty plan by default: nothing runs until a test is configured
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_CONF) $(PKG_BUILD_DIR)/files/apntest.config $(1)/etc/config/apntest
+endef
+
+$(eval $(call BuildPackage,wwand))
+$(eval $(call BuildPackage,wwand-qmi))
+$(eval $(call BuildPackage,wwand-mbim))
+$(eval $(call BuildPackage,wwand-ncm))
+$(eval $(call BuildPackage,wwand-mhi))
+$(eval $(call BuildPackage,wwand-esim))
+$(eval $(call BuildPackage,wwand-gps))
+$(eval $(call BuildPackage,wwand-apntest))
+define Package/wwand-datapath-rmnet_nss_mhi
+  SECTION:=net
+  CATEGORY:=Network
+  SUBMENU:=WWAN
+  TITLE:=NSS-offloaded QMAP datapath (vendor PCIe/MHI) for wwand
+  # +wwand: it serves both control protocols, so it names neither backend
+  # package. The vendor pcie_mhi driver and the NSS shim come from the board's
+  # own kernel tree and are deliberately not named here.
+  DEPENDS:=+wwand
+endef
+
+define Package/wwand-datapath-rmnet_nss_mhi/description
+  The PCIe/MHI sibling of wwand-datapath-rmnet_nss, for Quectel's vendor
+  pcie_mhi driver (mhi_netdev_quectel). That driver registers the QMAP children
+  itself and calls the rmnet_nss callbacks on each, so wwand adopts them rather
+  than creating any -- mainline rmnet would build a second set on a parent that
+  already demuxes.
+
+  It serves QMI and MBIM alike, because the driver does. The wire id differs:
+  QMAP framing uses 0x81 upwards, MBIM framing uses the MBIM session id, which
+  equals wwand's channel number on ordinary hardware and is offset by 112 on an
+  SDX7x (PCI 17cb:0309).
+
+  NOT hardware-verified: written from the driver sources. On any board without
+  that driver it probes false and changes nothing.
+endef
+
+define Package/wwand-datapath-rmnet_nss_mhi/install
+	$(INSTALL_DIR) $(1)$(UCDIR)
+	$(INSTALL_DATA) $(WWAND_UCODE)/datapath_rmnet_nss_mhi.uc $(1)$(UCDIR)/
+endef
+
+$(eval $(call BuildPackage,wwand-datapath-rmnet_nss))
+$(eval $(call BuildPackage,wwand-datapath-rmnet_nss_mhi))

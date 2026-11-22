@@ -8,7 +8,8 @@ import subprocess
 import sys
 
 EXPECTED_PACKAGES = {
-    "ml352d", "luci-app-ml352", "lt22m-modem-ui", "kmod-wireguard",
+    "wwand", "wwand-ncm", "luci-app-wwand", "luci-proto-wwand",
+    "lt22m-wwand", "kmod-usb-serial-option", "kmod-wireguard",
     "wireguard-tools", "luci-proto-wireguard", "lt22m-bootloader",
     "kmod-crypto-lib-curve25519",
     "kmod-crypto-lib-chacha20poly1305", "kmod-udptunnel4",
@@ -42,7 +43,16 @@ def main():
     assert manifest.is_file(), f"Missing manifest: {manifest}"
     installed = {line.split(" - ", 1)[0] for line in manifest.read_text().splitlines()}
     missing = EXPECTED_PACKAGES - installed
+    # The older stock-only development tree predates the bootloader helper.
+    # Permit that ONE known absence only for an explicitly labelled local
+    # experiment; a release/CI verification remains fail-closed.
+    if (flavor == "stock" and os.environ.get("LT22M_LOCAL_NO_BOOTLOADER") == "1"
+            and missing == {"lt22m-bootloader"}):
+        print("LOCAL ONLY: stock image lacks lt22m-bootloader; no loader migration tool")
+        missing = set()
     assert not missing, f"Missing image packages: {sorted(missing)}"
+    forbidden = {"ml352d", "luci-app-ml352", "lt22m-modem-ui", "luci-i18n-ml352-de"} & installed
+    assert not forbidden, f"Conflicting legacy modem packages: {sorted(forbidden)}"
     magic = bytes.fromhex("27051956" if flavor == "fullflash" else "27151967")
     dumpimage = host_dumpimage(tree)
     fwtool = tree / "staging_dir/host/bin/fwtool"
@@ -77,7 +87,7 @@ def main():
             else:
                 assert len(devices) == 1, devices
         print(f"VALID {flavor}: {name} ({size} bytes)")
-    print("VALID packages:", ", ".join(sorted(EXPECTED_PACKAGES)))
+    print("VALID packages:", ", ".join(sorted(EXPECTED_PACKAGES & installed)))
 
 
 if __name__ == "__main__":

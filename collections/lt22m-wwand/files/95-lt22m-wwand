@@ -1,0 +1,139 @@
+#!/bin/sh
+# Configure only a fresh LT22M; never replace an existing operator LTE/WAN.
+case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+	tuoshi,lt22m|tuoshi,lt22m-fullflash) ;;
+	*) exit 0 ;;
+esac
+
+# No auto-created wwan0, which could race the board's eth1/AT tty.
+# Keep any existing globals or modem settings.
+if [ -z "$(uci show network | sed -n 's/^network\.[^=]*=wwand_globals$/found/p')" ]; then
+	uci set network.lt22m_wwand=wwand_globals
+	uci set network.lt22m_wwand.autosetup=0
+	uci set network.lt22m_wwand.write_device=0
+fi
+# Remove only the DHCP child flag from this package's previous, identifiable
+# migration; native wwand now gets carrier DNS from the ML352 recipe and keeps
+# the IPv4 route itself. Leave any operator-managed LTE untouched.
+if [ "$(uci -q get network.lte.proto)" = wwand ] &&
+   [ "$(uci -q get network.lte.modem)" = ml352 ] &&
+   [ "$(uci -q get network.lte.ipv4_dhcp)" = 1 ] &&
+   [ "$(uci -q get network.ml352)" = wwand_modem ] &&
+   [ "$(uci -q get network.ml352.protocol)" = ncm ] &&
+   [ "$(uci -q get network.ml352.device)" = eth1 ] &&
+   [ "$(uci -q get network.ml352.tty)" = /dev/ttyUSB1 ]; then
+	uci -q delete network.lte.ipv4_dhcp
+	uci commit network
+	exit 0
+fi
+# Only the old package's exact interface shape is safe to adopt automatically.
+# Leave every custom LTE (or already migrated LTE) and its AT ownership alone.
+migrate=0
+if uci -q get network.lte >/dev/null; then
+	if [ "$(uci -q get network.lte)" = interface ] &&
+	   [ "$(uci -q get network.lte.proto)" = dhcp ] &&
+	   [ "$(uci -q get network.lte.device)" = eth1 ]; then
+		migrate=1
+	else
+		logger -t lt22m-wwand 'Existing non-default LTE preserved; migrate to wwand manually'
+		uci commit network
+		exit 0
+	fi
+fi
+
+# A custom legacy modem path, disabled modem, or alternate interface must not
+# silently become an active modem on ttyUSB1/eth1 after the package switch.
+if [ "$migrate" = 1 ] && uci -q get ml352.modem >/dev/null; then
+	if [ "$(uci -q get ml352.modem)" != modem ] ||
+	   [ "$(uci -q get ml352.modem.enabled)" != 1 ] ||
+	   [ "$(uci -q get ml352.modem.at_port)" != /dev/ttyUSB1 ] ||
+	   [ "$(uci -q get ml352.modem.netdev)" != eth1 ] ||
+	   [ "$(uci -q get ml352.modem.interface)" != lte ]; then
+		logger -t lt22m-wwand 'Custom legacy modem settings preserved; migrate to wwand manually'
+		uci commit network
+		exit 0
+	fi
+fi
+if [ -n "$(uci -q get network.ml352)" ] &&
+   [ "$(uci -q get network.ml352)" != wwand_modem ]; then
+	logger -t lt22m-wwand 'Existing network.ml352 section preserved; configure wwand manually'
+	uci commit network
+	exit 0
+fi
+# Do not repoint a known legacy LTE link onto an unrelated pre-existing
+# wwand modem section, even if that section happens to be named ml352.
+if [ "$migrate" = 1 ] && [ "$(uci -q get network.ml352)" = wwand_modem ]; then
+	if [ "$(uci -q get network.ml352.protocol)" != ncm ] ||
+	   [ "$(uci -q get network.ml352.device)" != eth1 ] ||
+	   [ "$(uci -q get network.ml352.tty)" != /dev/ttyUSB1 ]; then
+		logger -t lt22m-wwand 'Conflicting existing wwand modem preserved; migrate LTE manually'
+		uci commit network
+		exit 0
+	fi
+fi
+if ! uci -q get network.ml352 >/dev/null; then
+	uci set network.ml352=wwand_modem
+	uci set network.ml352.protocol=ncm
+	uci set network.ml352.device=eth1
+	uci set network.ml352.tty=/dev/ttyUSB1
+	uci set network.ml352.ml352_hotswap=1
+	uci set network.ml352.ml352_auto_dial=1
+	uci set network.ml352.ml352_roaming=1
+	if [ "$migrate" = 1 ]; then
+		case "$(uci -q get ml352.modem.roaming)" in
+			0) uci set network.ml352.ml352_roaming=0 ;;
+			1|'') ;;
+			*) logger -t lt22m-wwand 'Invalid legacy roaming setting skipped' ;;
+		esac
+	fi
+	uci set network.ml352.stats_interval=15
+	uci set network.ml352.failreboot=0
+fi
+# eth1 is renamed wwand0 after the first dial. Anchor the internal modem to
+# LT22M's USB port so a daemon restart still finds it (observed 2026-11-22).
+# Set only on the known eth1/NCM profile; leave custom modem paths untouched.
+if [ "$(uci -q get network.ml352)" = wwand_modem ] &&
+   [ "$(uci -q get network.ml352.protocol)" = ncm ] &&
+   [ "$(uci -q get network.ml352.device)" = eth1 ] &&
+   [ -z "$(uci -q get network.ml352.path)" ]; then
+	uci set network.ml352.path=1-1
+fi
+if [ "$(uci -q get network.ml352)" = wwand_modem ]; then
+	if [ "$migrate" = 1 ]; then
+		uci -q delete network.lte.device
+	else
+		uci set network.lte=interface
+	fi
+	uci set network.lte.proto=wwand
+	uci set network.lte.modem=ml352
+	uci set network.lte.pdp_type=ipv4
+	# wwand drives the NOARP RNDIS netdev and installs its native /32 and
+	# device-default route; the ML352 recipe merges matching CGCONTRDP DNS.
+	# Preserve an operator APN set in network.lte; otherwise copy the old
+	# modem APN only when it is valid. Empty means network default in both.
+	if [ "$migrate" = 1 ] && [ -z "$(uci -q get network.lte.apn)" ]; then
+		legacy_apn="$(uci -q get ml352.modem.apn)"
+		case "$legacy_apn" in
+			'') ;;
+			*[!a-zA-Z0-9._-]*) logger -t lt22m-wwand 'Invalid legacy APN skipped' ;;
+			*) uci set "network.lte.apn=$legacy_apn" ;;
+		esac
+	fi
+fi
+uci commit network
+
+# Join the existing WAN zone, without creating a new permissive zone.
+wan_zone=''
+for section in $(uci show firewall | sed -n 's/^firewall\.\([^=]*\)=zone$/\1/p'); do
+	[ "$(uci -q get "firewall.$section.name")" = wan ] && { wan_zone="$section"; break; }
+done
+if [ -n "$wan_zone" ]; then
+	networks="$(uci -q get "firewall.$wan_zone.network")"
+	case " $networks " in
+		*' lte '*) ;;
+		*) uci add_list "firewall.$wan_zone.network=lte"; uci commit firewall ;;
+	esac
+else
+	logger -t lt22m-wwand 'No WAN firewall zone found; configure firewall before forwarding LTE traffic'
+fi
+exit 0

@@ -1,0 +1,12 @@
+{
+  "leds": {
+    "style": "tech",
+    "sweep": true,
+    "leds": {
+      "2g": "blue:mobile-2",
+      "3g": "blue:mobile-3",
+      "4g": "blue:mobile-4"
+    }
+  },
+  "note": "LT22M: GPIO1 is the USB enable hog; GPIO38 is the user reset button, neither is a modem reset/power GPIO"
+}
