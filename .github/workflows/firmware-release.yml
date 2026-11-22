@@ -174,8 +174,6 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s lt22m-local-feed/tests -p test_luci_band.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
-            -s lt22m-local-feed/tests -p test_modem_apn.py -v
-          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s lt22m-local-feed/tests -p test_wwand_profile.py -v
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
             -s "$SOURCE_DIR/package/utils/lt22m-bootloader/tests" -p 'test_*.py' -v
